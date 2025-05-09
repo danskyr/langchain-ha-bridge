@@ -9,7 +9,7 @@ export ROUTER_MODEL="gpt-3.5-turbo"
 export QUERY_MODEL="gpt-4"
 
 # Run the server
-python3 -m src.langchain_ha_bridge
+python3 -m langchain_agent
 
 # Alternatively, you can run the server directly:
-# python langchain_agent/langchain_ha_bridge/server.py
+# python langchain_agent/src/server.py

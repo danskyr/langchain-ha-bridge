@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "langchain-ha-bridge"
+version = "1.0.0"
+description = "LangChain Router Agent for Home Assistant"
+authors = ["Daniel Reissenberger <daniel.reissenberger@gmail.com>"]
+readme = "README.md"
+packages = [{include = "langchain_ha_bridge", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+langchain = ">=0.0.267"
+openai = "^1.0.0"
+pyyaml = "^6.0"
+voluptuous = "^0.13.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+pytest-asyncio = "^0.21.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

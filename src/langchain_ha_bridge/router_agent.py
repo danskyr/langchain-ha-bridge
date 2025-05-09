@@ -1,24 +1,6 @@
-# Directory structure:
-# custom_components/langchain_agent/
-# ├─ __init__.py
-# ├─ manifest.json
-# └─ conversation.py
+"""LangChain Router Agent implementation for Home Assistant."""
+from typing import Dict, Any
 
-# __init__.py (empty file)
-
-# manifest.json
-# ----------------
-# {
-#   "domain": "langchain_agent",
-#   "name": "LangChain Router Agent",
-#   "version": "1.0.0",
-#   "integration_type": "conversation_agent",
-#   "requirements": ["langchain>=0.0.XXX", "openai"],
-#   "dependencies": []
-# }
-
-# conversation.py
-# ----------------
 from homeassistant.components.conversation import AbstractConversationAgent
 from homeassistant.core import HomeAssistant
 from langchain.chat_models import ChatOpenAI
@@ -26,23 +8,47 @@ from langchain.chains.router import RouterChain
 from langchain import LLMChain
 from langchain.prompts import PromptTemplate
 
+
 class LangChainRouterAgent(AbstractConversationAgent):
-    def __init__(self, hass: HomeAssistant):
+    """LangChain Router Agent for Home Assistant.
+    
+    This agent uses LangChain to route user queries to the appropriate handler
+    based on intent, either controlling smart home devices or answering general questions.
+    """
+    
+    def __init__(self, hass: HomeAssistant, config: Dict[str, Any] = None):
+        """Initialize the agent.
+        
+        Args:
+            hass: Home Assistant instance
+            config: Configuration dictionary with optional keys:
+                - openai_api_key: OpenAI API key
+                - router_model: Model to use for routing (default: gpt-3.5-turbo)
+                - query_model: Model to use for general queries (default: gpt-4)
+        """
         super().__init__(hass)
+        
+        # Get configuration or use defaults
+        config = config or {}
+        openai_api_key = config.get("openai_api_key", "YOUR_OPENAI_API_KEY")
+        router_model = config.get("router_model", "gpt-3.5-turbo")
+        query_model = config.get("query_model", "gpt-4")
+        
         # LLM for routing (deterministic classification)
         self.router_llm = ChatOpenAI(
             temperature=0.0,
-            model_name="gpt-3.5-turbo",
-            openai_api_key="YOUR_OPENAI_API_KEY"
+            model_name=router_model,
+            openai_api_key=openai_api_key
         )
+        
         # LLM for handling general queries (higher capability)
         self.query_llm = ChatOpenAI(
             temperature=0.7,
-            model_name="gpt-4",
-            openai_api_key="YOUR_OPENAI_API_KEY"
+            model_name=query_model,
+            openai_api_key=openai_api_key
         )
 
-        # Define the device-control chain (you could replace this with direct service calls)
+        # Define the device-control chain
         device_prompt = PromptTemplate(
             input_variables=["command"],
             template="""
@@ -76,11 +82,14 @@ Question: {question}
         )
 
     async def async_process(self, text: str) -> str:
+        """Process a user query.
+        
+        Args:
+            text: The user's query text
+            
+        Returns:
+            The response from the appropriate chain
+        """
         # Run the router synchronously in executor
         result = await self.hass.async_add_executor_job(lambda: self.router.run(text))
         return result
-
-# To enable this integration, place the folder under custom_components/, restart HA,
-# then in configuration.yaml or via UI add:
-# conversation:
-#   integration: langchain_agent

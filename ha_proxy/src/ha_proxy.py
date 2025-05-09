@@ -1,11 +1,7 @@
 import requests
 from homeassistant.components.conversation import AbstractConversationAgent
 from homeassistant.core import HomeAssistant
-
-DATA_SCHEMA = vol.Schema({
-    vol.Required("url", default="http://127.0.0.1:8000/process"): str
-})
-
+from .const import DOMAIN
 
 class RemoteConversationAgent(AbstractConversationAgent):
     def __init__(self, hass: HomeAssistant):

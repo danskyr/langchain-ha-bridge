@@ -91,5 +91,6 @@ Question: {question}
             The response from the appropriate chain
         """
         # Run the router synchronously in executor
+        print("Got a text", text)
         result = await self.hass.async_add_executor_job(lambda: self.router.run(text))
         return result

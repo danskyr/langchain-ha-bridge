@@ -48,15 +48,15 @@ The LangChain agent itself uses a two-stage approach:
 
 4. Start the server:
    ```bash
-   poetry run python -m src.langchain_ha_bridge
+   poetry run python -m langchain_agent.langchain_ha_bridge
    ```
 
    The server will start on http://0.0.0.0:8000
 
    Alternatively, you can use the example script:
    ```bash
-   chmod +x examples/run_server.sh
-   ./examples/run_server.sh
+   chmod +x scripts/run_server.sh
+   ./scripts/run_server.sh
    ```
 
 ### 2. Install the Home Assistant Proxy Component
@@ -115,7 +115,7 @@ curl -X POST http://localhost:8000/process \
 Or using the provided Python example script:
 
 ```bash
-python examples/test_server.py "Turn on the living room lights"
+python scripts/test_server.py "Turn on the living room lights"
 ```
 
 You can also use Python directly:

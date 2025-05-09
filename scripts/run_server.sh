@@ -12,4 +12,4 @@ export QUERY_MODEL="gpt-4"
 python -m src.langchain_ha_bridge
 
 # Alternatively, you can run the server directly:
-# python src/langchain_ha_bridge/server.py
+# python langchain_agent/langchain_ha_bridge/server.py

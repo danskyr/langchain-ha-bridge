@@ -1,5 +1,4 @@
 """Conversation platform for LangChain Remote."""
-from homeassistant.components.conversation import ConversationAgent, ConversationInput
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import DiscoveryInfoType

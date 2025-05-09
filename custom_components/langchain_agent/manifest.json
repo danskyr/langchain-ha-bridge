@@ -1,0 +1,8 @@
+{
+  "domain": "langchain_agent",
+  "name": "LangChain Router Agent",
+  "version": "1.0.0",
+  "integration_type": "conversation_agent",
+  "requirements": ["langchain>=0.0.267", "openai"],
+  "dependencies": []
+}

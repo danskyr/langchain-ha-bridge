@@ -1,6 +1,6 @@
 # LangChain Router Agent for Home Assistant
 
-This custom component integrates LangChain with Home Assistant to provide a smart conversation agent that can:
+This project provides a smart conversation agent for Home Assistant that can:
 
 1. Route user queries to the appropriate handler based on intent
 2. Control smart home devices through natural language commands
@@ -8,7 +8,18 @@ This custom component integrates LangChain with Home Assistant to provide a smar
 
 ## How It Works
 
-The agent uses a two-stage approach:
+The system uses a two-part architecture:
+
+1. **LangChain Server**: A standalone FastAPI service that hosts the LangChain router agent
+   - Runs independently from Home Assistant
+   - Processes text queries and returns responses
+   - Can be deployed anywhere (same machine, different machine, cloud)
+
+2. **Home Assistant Proxy Component**: A lightweight custom component for Home Assistant
+   - Forwards conversation requests from Home Assistant to the LangChain server
+   - Returns responses back to Home Assistant
+
+The LangChain agent itself uses a two-stage approach:
 
 1. **Router**: Classifies the user's input as either a device control command or a general query
 2. **Handlers**:
@@ -17,31 +28,57 @@ The agent uses a two-stage approach:
 
 ## Installation
 
-### Manual Installation
+### 1. Set up the LangChain Server
 
-1. Copy the `custom_components/langchain_agent` directory to your Home Assistant configuration directory
-2. Restart Home Assistant
-3. Add the following to your `configuration.yaml`:
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/langchain-ha-bridge.git
+   cd langchain-ha-bridge
+   ```
 
-```yaml
-langchain_agent:
-  openai_api_key: "your-openai-api-key"
-  router_model: "gpt-3.5-turbo"  # Optional, defaults to gpt-3.5-turbo
-  query_model: "gpt-4"  # Optional, defaults to gpt-4
-  
-conversation:
-  integration: langchain_agent
-```
+2. Install dependencies using Poetry:
+   ```bash
+   poetry install
+   ```
 
-4. Restart Home Assistant again
+3. Set your OpenAI API key as an environment variable:
+   ```bash
+   export OPENAI_API_KEY='your-openai-api-key'
+   ```
+
+4. Start the server:
+   ```bash
+   poetry run python -m src.langchain_ha_bridge
+   ```
+
+   The server will start on http://0.0.0.0:8000
+
+   Alternatively, you can use the example script:
+   ```bash
+   chmod +x examples/run_server.sh
+   ./examples/run_server.sh
+   ```
+
+### 2. Install the Home Assistant Proxy Component
+
+1. Copy the `custom_components/langchain_remote` directory to your Home Assistant configuration directory
+2. Edit the `conversation.py` file to set the correct URL for your LangChain server:
+   ```python
+   self._url = "http://YOUR_SERVER:8000/process"  # Replace with your server's address
+   ```
+3. Restart Home Assistant
+4. Go to Settings → Voice Assistants (or Conversation in older versions)
+5. Click Add Assistant, pick "LangChain Remote Agent"
 
 ## Configuration Options
 
-| Option | Type | Required | Default | Description |
-| ------ | ---- | -------- | ------- | ----------- |
-| openai_api_key | string | Yes | - | Your OpenAI API key |
-| router_model | string | No | gpt-3.5-turbo | The model to use for routing and device control |
-| query_model | string | No | gpt-4 | The model to use for answering general queries |
+### LangChain Server Environment Variables
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| OPENAI_API_KEY | Yes | - | Your OpenAI API key |
+| ROUTER_MODEL | No | gpt-3.5-turbo | The model to use for routing and device control |
+| QUERY_MODEL | No | gpt-4 | The model to use for answering general queries |
 
 ## Usage
 
@@ -65,17 +102,45 @@ Once installed and configured, you can interact with the agent through any Home 
 
 ## Testing
 
-A test script is included to verify that the agent is working correctly. To use it:
+### Testing the LangChain Server
 
-1. Set your OpenAI API key as an environment variable:
-   ```bash
-   export OPENAI_API_KEY='your-openai-api-key'
-   ```
+You can test the LangChain server directly using curl:
 
-2. Run the test script:
-   ```bash
-   python test_langchain_agent.py
+```bash
+curl -X POST http://localhost:8000/process \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Turn on the living room lights"}'
+```
+
+Or using the provided Python example script:
+
+```bash
+python examples/test_server.py "Turn on the living room lights"
+```
+
+You can also use Python directly:
+
+```python
+import requests
+response = requests.post(
+    "http://localhost:8000/process",
+    json={"text": "Turn on the living room lights"}
+)
+print(response.json())
+```
+
+### Testing the Home Assistant Integration
+
+In Home Assistant:
+
+1. Go to Developer Tools → Services
+2. Choose `conversation.process`
+3. Enter the following payload:
+   ```yaml
+   text: "Turn on the kitchen light"
+   agent_id: langchain_remote
    ```
+4. Click "Call Service" and check the response
 
 ## Troubleshooting
 

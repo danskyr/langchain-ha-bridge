@@ -1,0 +1,7 @@
+{
+  "domain": "langchain_remote",
+  "name": "LangChain Remote Agent",
+  "version": "1.0.0",
+  "integration_type": "conversation_agent",
+  "requirements": ["requests"]
+}

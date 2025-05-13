@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from langchain.chat_models import ChatOpenAI
-from langchain.chains.router import RouterChain
-from langchain import LLMChain
+from langchain_community.chat_models import ChatOpenAI
+
+# from langchain.chains.router import RouterChain
+from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 import os
 

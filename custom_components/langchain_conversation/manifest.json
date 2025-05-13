@@ -1,5 +1,5 @@
 {
-  "domain": "langchain_remote",
+  "domain": "langchain_conversation",
   "name": "LangChain Remote Agent",
   "config_flow": true,
   "version": "1.0.0",

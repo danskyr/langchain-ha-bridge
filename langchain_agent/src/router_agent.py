@@ -1,71 +1,122 @@
+import logging
 import os
 
 from dotenv import load_dotenv
-# from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_community.chat_models import ChatOpenAI
 
+# Load environment variables
 load_dotenv()
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-router_model = os.environ.get("ROUTER_MODEL", "gpt-3.5-turbo")
-query_model = os.environ.get("QUERY_MODEL", "gpt-4")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
+QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Prompt templates
+ROUTER_PROMPT = PromptTemplate(
+    input_variables=["query"],
+    template="""
+You have two chains available:
+- device: for Home Assistant / IoT service calls
+- general: for general Q&A
+
+Decide which chain should handle the user input.
+Output exactly one word: device or general.
+
+User input:
+{query}
+""",
+)
+
+DEVICE_PROMPT = PromptTemplate(
+    input_variables=["command"],
+    template="""
+You are an IoT controller. Interpret the user command and output a Home Assistant service call payload in YAML.
+User Command: {command}
+Output only the YAML service call.
+""",
+)
+
+GENERAL_PROMPT = PromptTemplate(
+    input_variables=["question"],
+    template="""
+You are a helpful assistant. Answer the following question in clear, concise language.
+Question: {question}
+""",
+)
 
 
 class LangChainRouterAgent:
-    """Router agent for LangChain.
-    
-    This class is a placeholder for the actual implementation.
+    """
+    A router agent that classifies user queries and dispatches them
+    to the appropriate LLMChain (device control vs general Q&A).
     """
 
-    def __init__(self):
-        """Initialize the router agent."""
-        pass
+    def __init__(self) -> None:
+        # Validate environment
+        if not OPENAI_API_KEY:
+            raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
 
-    def route(self, query):
-        # Get configuration from environment variables
-
-        # Init LLMs
-        router_llm = ChatOpenAI(
+        # Initialize LLMs
+        self.router_llm = ChatOpenAI(
             temperature=0.0,
-            model_name=router_model,
-            openai_api_key=openai_api_key
+            model_name=ROUTER_MODEL,
+            openai_api_key=OPENAI_API_KEY,
         )
-
-        query_llm = ChatOpenAI(
+        self.query_llm = ChatOpenAI(
             temperature=0.7,
-            model_name=query_model,
-            openai_api_key=openai_api_key
+            model_name=QUERY_MODEL,
+            openai_api_key=OPENAI_API_KEY,
         )
 
-        device_chain = LLMChain(
-            llm=router_llm,
-            prompt=PromptTemplate(
-                input_variables=["command"],
-                template="""
-        You are an IoT controller. Interpret the user command and output a Home Assistant service call payload in YAML.
-        User Command: {command}
-        Output only the YAML service call.
-        """,
-            ),
+        # Initialize chains
+        self.router_chain: LLMChain = LLMChain(
+            llm=self.router_llm,
+            prompt=ROUTER_PROMPT,
+        )
+        self.device_chain: LLMChain = LLMChain(
+            llm=self.router_llm,
+            prompt=DEVICE_PROMPT,
+        )
+        self.general_chain: LLMChain = LLMChain(
+            llm=self.query_llm,
+            prompt=GENERAL_PROMPT,
         )
 
-        # Define a general query chain
-        general_chain = LLMChain(
-            llm=query_llm,
-            prompt=PromptTemplate(
-                input_variables=["question"],
-                template="""
-        You are a helpful assistant. Answer the following question in clear, concise language.
-        Question: {question}
-        """,
-            ),
-        )
+    def route(self, query: str) -> str:
+        """
+        Route the query to either the device or general chain.
 
-        # Setup a simple router (RouterChain API has changed)
-        # For now, we'll just use a simple function to route requests
-        # In a real implementation, this would use the router_llm to determine the route
-        if "turn on" in query.lower() or "turn off" in query.lower():
-            return device_chain.run(command=query)
-        else:
-            return general_chain.run(question=query)
+        Args:
+            query: The user input string.
+        Returns:
+            The output from the selected chain.
+        """
+        logger.info("Routing query: %s", query)
+        decision = self.router_chain.run(query=query).strip().lower()
+        logger.info("Routing decision: %s", decision)
+
+        if decision == "device":
+            return self.device_chain.run(command=query)
+        return self.general_chain.run(question=query)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="LangChain Router Agent: IoT device control vs general Q&A"
+    )
+    parser.add_argument(
+        "query", help="The user query to classify and execute"
+    )
+    args = parser.parse_args()
+
+    agent = LangChainRouterAgent()
+    output = agent.route(args.query)
+    print(output)

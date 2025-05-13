@@ -7,6 +7,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .ha_proxy import RemoteConversationAgent
+from homeassistant.components import conversation
 
 PLATFORMS = ["conversation"]
 
@@ -22,8 +23,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = entry.data
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    conversation.async_set_agent(hass, entry, RemoteConversationAgent(hass))
 
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 

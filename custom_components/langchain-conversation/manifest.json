@@ -3,7 +3,7 @@
   "name": "LangChain Remote Agent",
   "config_flow": true,
   "version": "1.0.0",
-  "integration_type": "conversation_agent",
+  "integration_type": "service",
   "requirements": ["requests", "aiohttp"],
-  "dependencies": ["system_health", "conversation"]
+  "dependencies": ["conversation"],
 }

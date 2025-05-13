@@ -6,18 +6,14 @@ from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_community.chat_models import ChatOpenAI
 
-# Load environment variables
 load_dotenv()
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
 QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Prompt templates
 ROUTER_PROMPT = PromptTemplate(
     input_variables=["query"],
     template="""
@@ -52,17 +48,10 @@ Question: {question}
 
 
 class LangChainRouterAgent:
-    """
-    A router agent that classifies user queries and dispatches them
-    to the appropriate LLMChain (device control vs general Q&A).
-    """
-
     def __init__(self) -> None:
-        # Validate environment
         if not OPENAI_API_KEY:
             raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
 
-        # Initialize LLMs
         self.router_llm = ChatOpenAI(
             temperature=0.0,
             model_name=ROUTER_MODEL,
@@ -74,7 +63,6 @@ class LangChainRouterAgent:
             openai_api_key=OPENAI_API_KEY,
         )
 
-        # Initialize chains
         self.router_chain: LLMChain = LLMChain(
             llm=self.router_llm,
             prompt=ROUTER_PROMPT,
@@ -89,14 +77,6 @@ class LangChainRouterAgent:
         )
 
     def route(self, query: str) -> str:
-        """
-        Route the query to either the device or general chain.
-
-        Args:
-            query: The user input string.
-        Returns:
-            The output from the selected chain.
-        """
         logger.info("Routing query: %s", query)
         decision = self.router_chain.run(query=query).strip().lower()
         logger.info("Routing decision: %s", decision)
@@ -107,16 +87,18 @@ class LangChainRouterAgent:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="LangChain Router Agent: IoT device control vs general Q&A"
-    )
-    parser.add_argument(
-        "query", help="The user query to classify and execute"
-    )
-    args = parser.parse_args()
-
     agent = LangChainRouterAgent()
-    output = agent.route(args.query)
-    print(output)
+    print("Welcome to the LangChain Router Agent! 👋")
+    print("Type your query, or 'exit' to quit.")
+    try:
+        while True:
+            query = input("You: ")
+            if not query:
+                continue
+            if query.strip().lower() in ("exit", "quit"):
+                print("Goodbye! 👋")
+                break
+            response = agent.route(query)
+            print(f"Agent: {response}\n")
+    except (KeyboardInterrupt, EOFError):
+        print("\nGoodbye! 👋")

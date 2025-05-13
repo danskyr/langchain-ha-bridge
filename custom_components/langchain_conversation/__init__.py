@@ -7,7 +7,6 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .ha_proxy import RemoteConversationAgent
-from homeassistant.components import conversation
 
 PLATFORMS = ["conversation"]
 

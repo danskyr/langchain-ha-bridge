@@ -3,6 +3,7 @@ from typing import List
 from fastapi import FastAPI
 from pydantic import BaseModel
 from langchain_community.chat_models import ChatOpenAI
+from dotenv import load_dotenv
 
 # from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
@@ -11,8 +12,10 @@ import os
 
 app = FastAPI()
 
+load_dotenv()
+
 # Get configuration from environment variables
-openai_api_key = os.environ.get("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY")
+openai_api_key = os.environ.get("OPENAI_API_KEY")
 router_model = os.environ.get("ROUTER_MODEL", "gpt-3.5-turbo")
 query_model = os.environ.get("QUERY_MODEL", "gpt-4")
 
@@ -119,7 +122,7 @@ class OpenAICompatibleResponse(BaseModel):
 @app.post("/v1/completions", response_model=OpenAICompatibleResponse)
 def process(req: OpenAITextCompletionRequest):
     print("REQUEST", req)
-    # out = route_request(req.text)
+    response_text = route_request(req.prompt)
     # return {"response": OpenAICompatibleResponse(
     #     choices=[
     #         Choice(text="Yoooooooooooo Mufka")
@@ -128,6 +131,6 @@ def process(req: OpenAITextCompletionRequest):
     return OpenAICompatibleResponse(
         object =  "text_completion",
         choices=[
-            Choice(text="Yoooooooooooo Mufka", finish_reason="length")
+            Choice(text=response_text, finish_reason="length")
         ]
     )

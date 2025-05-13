@@ -1,70 +1,14 @@
 from typing import List
 
 from fastapi import FastAPI
-from pydantic import BaseModel
-from langchain_community.chat_models import ChatOpenAI
-from dotenv import load_dotenv
-
 # from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-import os
+from pydantic import BaseModel
+
+from langchain_agent.src import LangChainRouterAgent
 
 app = FastAPI()
 
-load_dotenv()
-
-# Get configuration from environment variables
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-router_model = os.environ.get("ROUTER_MODEL", "gpt-3.5-turbo")
-query_model = os.environ.get("QUERY_MODEL", "gpt-4")
-
-# Init LLMs
-router_llm = ChatOpenAI(
-    temperature=0.0,
-    model_name=router_model,
-    openai_api_key=openai_api_key
-)
-
-query_llm = ChatOpenAI(
-    temperature=0.7,
-    model_name=query_model,
-    openai_api_key=openai_api_key
-)
-
-# Define the device-control chain
-device_chain = LLMChain(
-    llm=router_llm,
-    prompt=PromptTemplate(
-        input_variables=["command"],
-        template="""
-You are an IoT controller. Interpret the user command and output a Home Assistant service call payload in YAML.
-User Command: {command}
-Output only the YAML service call.
-""",
-    ),
-)
-
-# Define a general query chain
-general_chain = LLMChain(
-    llm=query_llm,
-    prompt=PromptTemplate(
-        input_variables=["question"],
-        template="""
-You are a helpful assistant. Answer the following question in clear, concise language.
-Question: {question}
-""",
-    ),
-)
-
-# Setup a simple router (RouterChain API has changed)
-# For now, we'll just use a simple function to route requests
-def route_request(text):
-    # In a real implementation, this would use the router_llm to determine the route
-    if "turn on" in text.lower() or "turn off" in text.lower():
-        return device_chain.run(command=text)
-    else:
-        return general_chain.run(question=text)
 
 class OpenAITextCompletionRequest(BaseModel):
     prompt: str
@@ -73,11 +17,13 @@ class OpenAITextCompletionRequest(BaseModel):
     # temperature: str
     # top_p: str
 
+
 class Choice(BaseModel):
     text: str
     finish_reason: str
     # index: int
     # logprobs: dict
+
 
 class OpenAICompatibleResponse(BaseModel):
     choices: List[Choice]
@@ -87,6 +33,7 @@ class OpenAICompatibleResponse(BaseModel):
     # model
     # system_fingerprint
     # usage
+
 
 # Example Request
 # {
@@ -119,17 +66,20 @@ class OpenAICompatibleResponse(BaseModel):
 #   }
 # }
 
+router_agent = LangChainRouterAgent()
+
+
 @app.post("/v1/completions", response_model=OpenAICompatibleResponse)
 def process(req: OpenAITextCompletionRequest):
     print("REQUEST", req)
-    response_text = route_request(req.prompt)
+    response_text = router_agent.route(req.prompt)
     # return {"response": OpenAICompatibleResponse(
     #     choices=[
     #         Choice(text="Yoooooooooooo Mufka")
     #     ]
     # )}
     return OpenAICompatibleResponse(
-        object =  "text_completion",
+        object="text_completion",
         choices=[
             Choice(text=response_text, finish_reason="length")
         ]

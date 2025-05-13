@@ -56,13 +56,11 @@ class LangChainRouterAgent:
 
         self.router_llm = ChatOpenAI(
             temperature=0.0,
-            model_name=ROUTER_MODEL,
-            openai_api_key=OPENAI_API_KEY,
+            name=ROUTER_MODEL,
         )
         self.query_llm = ChatOpenAI(
             temperature=0.7,
-            model_name=QUERY_MODEL,
-            openai_api_key=OPENAI_API_KEY,
+            model=QUERY_MODEL,
         )
 
         self.router_runnable = ROUTER_PROMPT | self.router_llm
@@ -94,13 +92,13 @@ if __name__ == "__main__":
     print("Type your query, or 'exit' to quit.")
     try:
         while True:
-            query = input("You: ")
-            if not query.strip():
+            input_query = input("You: ")
+            if not input_query.strip():
                 continue
-            if query.strip().lower() in ("exit", "quit"):
+            if input_query.strip().lower() in ("exit", "quit"):
                 print("Goodbye! 👋")
                 break
-            response = agent.route(query)
+            response = agent.route(input_query)
             print(f"Agent: {response}\n")
     except (KeyboardInterrupt, EOFError):
         print("\nGoodbye! 👋")

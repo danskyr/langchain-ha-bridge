@@ -7,13 +7,14 @@ readme = "README.md"
 packages = [{include = "langchain_agent"}]
 
 [tool.poetry.dependencies]
-python = ">=3.8.1,<4.0"
+python = ">=3.13.2,<3.14"
 langchain = ">=0.0.267"
 openai = "^1.0.0"
 pyyaml = "^6.0"
-voluptuous = "^0.13.1"
+voluptuous = "^0.15.2"
 fastapi = "^0.104.0"
 uvicorn = "^0.23.2"
+homeassistant = "^2025.5.1"
 
 [tool.poetry.scripts]
 langchain-ha-bridge = "langchain_agent.src.__main__:main"

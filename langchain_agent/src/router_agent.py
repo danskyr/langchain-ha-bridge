@@ -11,10 +11,8 @@ if not dotenv_result:
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
+DEVICE_MODEL = os.getenv("DEVICE_MODEL", "gpt-3.5-turbo")
 QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 ROUTER_PROMPT = PromptTemplate(
     input_variables=["query"],
@@ -43,7 +41,7 @@ Output only the YAML service call.
 GENERAL_PROMPT = PromptTemplate(
     input_variables=["question"],
     template="""
-You are a helpful assistant. Answer the following question in clear, concise language.
+You are a helpful voice assistant. Answer the following question in clear, concise language.
 Question: {question}
 """,
 )
@@ -51,6 +49,7 @@ Question: {question}
 
 class LangChainRouterAgent:
     def __init__(self) -> None:
+        self.logger = logging.getLogger(__name__)
         if not OPENAI_API_KEY:
             raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
 
@@ -58,21 +57,25 @@ class LangChainRouterAgent:
             temperature=0.0,
             name=ROUTER_MODEL,
         )
+        self.device_llm = ChatOpenAI(
+            temperature=0.0,
+            name=DEVICE_MODEL,
+        )
         self.query_llm = ChatOpenAI(
             temperature=0.7,
             model=QUERY_MODEL,
         )
 
         self.router_runnable = ROUTER_PROMPT | self.router_llm
-        self.device_runnable = DEVICE_PROMPT | self.router_llm
+        self.device_runnable = DEVICE_PROMPT | self.device_llm
         self.general_runnable = GENERAL_PROMPT | self.query_llm
 
     def route(self, query: str) -> str:
-        logger.info("Routing query: %s", query)
-        decision_text = self._invoke(self.router_runnable, {"query": query}).strip().lower()
-        logger.info("Routing decision: %s", decision_text)
+        self.logger.info("Routing query: %s", query)
+        route_outcome = self._invoke(self.router_runnable, {"query": query}).strip().lower()
+        self.logger.info("Routing decision: %s", route_outcome)
 
-        if decision_text == "device":
+        if route_outcome == "device":
             return self._invoke(self.device_runnable, {"command": query}).strip()
         return self._invoke(self.general_runnable, {"question": query}).strip()
 
@@ -87,6 +90,7 @@ class LangChainRouterAgent:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     agent = LangChainRouterAgent()
     print("Welcome to the LangChain Router Agent! 👋")
     print("Type your query, or 'exit' to quit.")

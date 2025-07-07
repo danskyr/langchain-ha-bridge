@@ -4,11 +4,12 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.const import CONF_API_KEY, Platform
 
 from .const import DOMAIN
 from .ha_proxy import RemoteConversationAgent
 
-PLATFORMS = ["conversation"]
+PLATFORMS = (Platform.CONVERSATION,)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:

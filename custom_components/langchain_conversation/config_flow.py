@@ -45,6 +45,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
+            title="LangChain API Configuration",
             data_schema=DATA_SCHEMA,
             errors=errors,
             description_placeholders={
@@ -57,7 +58,8 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Confirm the configuration."""
         if user_input is not None or self.data:
             return self.async_create_entry(
-                title=f"LangChain Remote ({self._get_host_from_url(self.data['url'])})",
+                title=f"LangChain Conversation Agent API ({self._get_host_from_url(self.data['url'])})",
+                description="LangChain Conversation Agent API",
                 data=self.data
             )
 

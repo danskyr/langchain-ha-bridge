@@ -13,6 +13,7 @@ from homeassistant.helpers.chat_session import async_get_chat_session
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.intent import IntentResponseErrorCode
 
+from homeassistant.helpers import device_registry as dr, llm
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,14 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         self.hass = hass
         self.entry = entry
         self._name = "LangChain Conversation Agent"
+        self._attr_device_info = dr.DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=self._name,
+            manufacturer="LangChain",
+            model="Custom",
+            entry_type=dr.DeviceEntryType.SERVICE,
+        )
+
 
     @property
     def supported_languages(self) -> list[str]:
@@ -84,7 +93,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
 
             response = await session.post(
-                url,
+                f"{url}/v1/completions",
                 json={"text": user_input.text},
                 timeout=aiohttp.ClientTimeout(total=timeout)
             )

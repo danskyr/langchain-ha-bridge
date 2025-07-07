@@ -1184,6 +1184,20 @@ files = [
 ]
 
 [[package]]
+name = "dotenv"
+version = "0.9.9"
+description = "Deprecated package"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9"},
+]
+
+[package.dependencies]
+python-dotenv = "*"
+
+[[package]]
 name = "envs"
 version = "1.4"
 description = "Easy access of environment variables from Python with support for strings, booleans, list, tuples, and dicts."
@@ -4711,4 +4725,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13.2,<3.14"
-content-hash = "6861ba5a5fd9d007fa892fc11f7aeb9c9fa1505fe3a7f97bf690143108a34836"
+content-hash = "42604a73b479aea591e400713e6d8669278454007217eb17166c3ae91e0dba58"

@@ -29,7 +29,7 @@ async def async_setup_entry(
 
 class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
-        super.__init__()
+        super.__init__(self)
         self.hass = hass
         self.entry = entry
         self._name = "LangChain Conversation Agent"

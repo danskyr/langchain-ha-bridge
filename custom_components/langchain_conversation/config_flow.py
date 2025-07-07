@@ -10,7 +10,7 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 DATA_SCHEMA = vol.Schema({
-    vol.Required("url", default="http://127.0.0.1:8000/process", description="LangChain Service URL"): str,
+    vol.Required("url", default="http://127.0.0.1:8000", description="LangChain Service URL"): str,
     vol.Optional("timeout", default=10, description="Connection timeout (seconds)"): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
     vol.Optional("verify_ssl", default=False, description="Verify SSL certificates"): bool,
 })
@@ -28,6 +28,9 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
+            # Store the configuration
+            self.data = user_input
+
             # Validate URL format
             url_validation = self._validate_url_format(user_input.get("url"))
             if not url_validation["valid"]:
@@ -36,8 +39,6 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Test connection to the URL
                 connection_test = await self._test_connection(user_input)
                 if connection_test["valid"]:
-                    # Store the configuration
-                    self.data = user_input
                     return await self.async_step_confirm()
                 else:
                     errors["base"] = connection_test["error"]
@@ -47,7 +48,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=DATA_SCHEMA,
             errors=errors,
             description_placeholders={
-                "url_example": "Example: http://192.168.1.100:8000/process",
+                "url_example": "Example: http://192.168.1.100:8000",
                 "timeout_help": "How long to wait for responses (1-60 seconds)",
             },
         )
@@ -65,7 +66,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "url": self.data.get("url"),
                 "timeout": self.data.get("timeout", 10),
-                "verify_ssl": "Yes" if self.data.get("verify_ssl", True) else "No",
+                "verify_ssl": "Yes" if self.data.get("verify_ssl", False) else "No",
             },
         )
 
@@ -91,7 +92,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test connection to the LangChain service."""
         url = config.get("url")
         timeout = config.get("timeout", 10)
-        verify_ssl = config.get("verify_ssl", True)
+        verify_ssl = config.get("verify_ssl", False)
 
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
@@ -104,7 +105,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             async with asyncio.timeout(timeout):
                 async with session.post(
-                        url,
+                        url + "/test",
                         json=test_payload,
                         timeout=aiohttp.ClientTimeout(total=timeout)
                 ) as response:
@@ -113,8 +114,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             await response.json()
                             return {"valid": True, "error": None}
                         except Exception:
-                            # Even if JSON parsing fails, 200 status means service is responding
-                            return {"valid": True, "error": None}
+                            return {"valid": False, "error": f"received 200, but failed to parse response as json: {await response.text()}"}
                     else:
                         return {"valid": False, "error": f"connection_error_status_{response.status}"}
 
@@ -165,7 +165,7 @@ class LangChainRemoteOptionsFlowHandler(config_entries.OptionsFlow):
                 ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
                 vol.Optional(
                     "verify_ssl",
-                    default=self.config_entry.options.get("verify_ssl", True)
+                    default=self.config_entry.options.get("verify_ssl", False)
                 ): bool,
             })
         )

@@ -1,12 +1,15 @@
 {
   "domain": "langchain_conversation_agent_proxy",
   "name": "LangChain Remote Agent",
-  "config_flow": true,
-  "version": "1.0.0",
-  "integration_type": "conversation_agent",
-  "requirements": ["requests", "aiohttp"],
-  "dependencies": ["system_health" ,"conversation"],
-  "icon": "icon",
   "codeowners": ["@danskyr", "@jackman3005"],
-  "documentation": "https://github.com/danskyr/langchain-ha-bridge"
+  "documentation": "https://github.com/danskyr/langchain-ha-bridge",
+  "config_flow": true,
+  "dependencies": ["system_health" ,"conversation"],
+  "after_dependencies": ["assist_pipeline", "intent"],
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [
+    "requests==2.32.4",
+    "aiohttp==3.12.13"
+  ]
 }

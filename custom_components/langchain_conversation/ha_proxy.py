@@ -8,8 +8,9 @@ from .const import DOMAIN
 
 class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
     def __init__(self, hass: HomeAssistant):
-        super().__init__(hass)
-        self._hass = hass
+        AbstractConversationAgent.__init__(self)
+        ConversationEntity.__init__(self, hass)
+        self.hass = hass
         self._name = "LangChain Remote Agent"
 
     @property

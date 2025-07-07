@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434       # same effect as --host/--port
+    ports:
+      - "11434:11434"
+    entrypoint: [ "ollama", "serve"]
+    volumes:
+      - ./data:/root/.ollama
+    restart: unless-stopped
+    healthcheck: # wait for API to come up
+      test: [ "CMD", "curl", "-f", "http://localhost:11434" ]
+      interval: 30s
+      retries: 5

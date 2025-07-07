@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    volumes:
+      - ./hass-config:/config
+      - ./hass-recordings:/recordings
+      - /etc/localtime:/etc/localtime:ro
+      - /Users/homeassistant/langchain-ha-bridge/langchain_remote:/config/custom_components/langchain_remote
+    environment:
+      - TZ=Australia/Sydney
+    ports:
+      - '8123:8123'
+    restart: unless-stopped

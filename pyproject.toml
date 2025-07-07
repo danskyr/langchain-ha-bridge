@@ -2,21 +2,22 @@
 name = "langchain-ha-bridge"
 version = "1.0.0"
 description = "LangChain Router Agent for Home Assistant"
-authors = ["Daniel Reissenberger <daniel.reissenberger@gmail.com>"]
+authors = ["Daniel Reissenberger <daniel.reissenberger@gmail.com>", "Jack Coy <jackman3000@gmail.com>"]
 readme = "README.md"
 packages = [{include = "langchain_agent"}]
 
 [tool.poetry.dependencies]
 python = ">=3.13.2,<3.14"
-langchain = ">=0.0.267"
-openai = "^1.0.0"
+langchain = "0.3.26"
+openai = "1.93.0"
+ollama = "0.5.1"
 pyyaml = "^6.0"
 voluptuous = "^0.15.2"
-fastapi = "^0.104.0"
-uvicorn = "^0.23.2"
-homeassistant = "^2025.5.1"
-langchain-community = "^0.3.24"
-langchain-openai = "^0.3.16"
+fastapi = "0.115.14"
+uvicorn = "0.35.0"
+homeassistant = "2025.7.1"
+langchain-community = "0.3.27"
+langchain-openai = "0.3.27"
 
 [tool.poetry.scripts]
 langchain-ha-bridge = "langchain_agent.src.__main__:main"

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  piper:
+    container_name: piper
+    image: rhasspy/wyoming-piper:latest
+    command: --voice en_US-lessac-medium
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Australia/Sydney
+    ports:
+      - '10200:10200'
+    restart: unless-stopped

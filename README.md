@@ -8,8 +8,9 @@ This project provides a smart conversation agent for Home Assistant that can:
 
 ## How It Works
 
-The system uses a two-part architecture:
+The system uses a multi-part architecture:
 
+The two primary components are:
 1. **LangChain Server**: A standalone FastAPI service that hosts the LangChain router agent
    - Runs independently from Home Assistant
    - Processes text queries and returns responses
@@ -18,6 +19,12 @@ The system uses a two-part architecture:
 2. **Home Assistant Proxy Component**: A lightweight custom component for Home Assistant
    - Forwards conversation requests from Home Assistant to the LangChain server
    - Returns responses back to Home Assistant
+
+Additionally, the following need to be available:
+3. Whisper (`cd services/whisper; docker-compose up -d`)
+4. Piper (`cd services/piper; docker-compose up -d`)
+5. Ollama (`cd services/ollama; docker-compose up -d`, or `brew install ollama` and `ollama serve`)
+   - Additionally, you will need to download relevant models for testing/use.
 
 The LangChain agent itself uses a two-stage approach:
 

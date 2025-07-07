@@ -5,5 +5,8 @@
   "version": "1.0.0",
   "integration_type": "conversation_agent",
   "requirements": ["requests", "aiohttp"],
-  "dependencies": ["system_health" ,"conversation"]
+  "dependencies": ["system_health" ,"conversation"],
+  "icon": "icon",
+  "codeowners": ["@danskyr", "@jackman3005"],
+  "documentation": "https://github.com/danskyr/langchain-ha-bridge"
 }

@@ -84,3 +84,13 @@ def process(req: OpenAITextCompletionRequest):
             Choice(text=response_text, finish_reason="length")
         ]
     )
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "healthy", "service": "langchain-conversation-agent"}
+
+@app.post("/test")
+async def test_connection():
+    """Test endpoint for Home Assistant integration."""
+    return {"status": "ok", "message": "Connection successful"}

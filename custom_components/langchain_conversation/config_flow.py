@@ -7,6 +7,8 @@ from homeassistant.core import callback
 from .const import DOMAIN
 import logging
 
+from .utils import get_host_from_url
+
 _LOGGER = logging.getLogger(__name__)
 
 DATA_SCHEMA = vol.Schema({
@@ -57,7 +59,7 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Confirm the configuration."""
         if user_input is not None or self.data:
             return self.async_create_entry(
-                title=f"LangChain Conversation Agent API ({self._get_host_from_url(self.data['url'])})",
+                title=f"LangChain Conversation Agent API ({get_host_from_url(self.data['url'])})",
                 description="LangChain Conversation Agent API",
                 data=self.data
             )
@@ -128,15 +130,6 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as err:
             _LOGGER.error("Unexpected error testing connection: %s", err)
             return {"valid": False, "error": "connection_unknown_error"}
-
-    def _get_host_from_url(self, url):
-        """Extract host from URL for title."""
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            return parsed.netloc
-        except Exception:
-            return "Remote Service"
 
     @staticmethod
     @callback

@@ -67,23 +67,33 @@ class OpenAICompatibleResponse(BaseModel):
 # }
 
 router_agent = LangChainRouterAgent()
+class OurResponse(BaseModel):
+    response: str
 
-
-@app.post("/v1/completions", response_model=OpenAICompatibleResponse)
+@app.post("/v1/completions", response_model=OurResponse)
 def process(req: OpenAITextCompletionRequest):
     print("REQUEST", req)
     response_text = router_agent.route(req.prompt)
-    # return {"response": OpenAICompatibleResponse(
-    #     choices=[
-    #         Choice(text="Yoooooooooooo Mufka")
-    #     ]
-    # )}
-    return OpenAICompatibleResponse(
-        object="text_completion",
-        choices=[
-            Choice(text=response_text, finish_reason="length")
-        ]
+    return OurResponse(
+        response=response_text,
     )
+
+
+# @app.post("/v1/completions", response_model=OpenAICompatibleResponse)
+# def process(req: OpenAITextCompletionRequest):
+#     print("REQUEST", req)
+#     response_text = router_agent.route(req.prompt)
+#     # return {"response": OpenAICompatibleResponse(
+#     #     choices=[
+#     #         Choice(text="Yoooooooooooo Mufka")
+#     #     ]
+#     # )}
+#     return OpenAICompatibleResponse(
+#         object="text_completion",
+#         choices=[
+#             Choice(text=response_text, finish_reason="length")
+#         ]
+#     )
 
 @app.get("/health")
 async def health_check():

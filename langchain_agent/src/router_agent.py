@@ -2,8 +2,15 @@ import logging
 import os
 
 from dotenv import load_dotenv
+from langchain.chains.llm import LLMChain
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from ollama import generate
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 dotenv_result = load_dotenv()
 if not dotenv_result:
@@ -14,18 +21,12 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
 DEVICE_MODEL = os.getenv("DEVICE_MODEL", "gpt-3.5-turbo")
 QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
 
-ROUTER_PROMPT = PromptTemplate(
+ROOT_CLASSIFIER_PROMPT = PromptTemplate(
     input_variables=["query"],
     template="""
-You have two chains available:
-- device: for Home Assistant / IoT service calls
-- general: for general Q&A
+You are an intelligent routing agent for a voice assistant. Classify the user's request into one of the following categories: 'IOT_COMMAND' (any simple command to turn on/off an IoT device) or 'ADVANCED_REQUEST' (everything else). Provide only the category.
 
-Decide which chain should handle the user input.
-Output exactly one word: device or general.
-
-User input:
-{query}
+Request: "{query}"
 """,
 )
 
@@ -46,6 +47,9 @@ Question: {question}
 """,
 )
 
+from langchain_community.llms import Ollama
+
+gemma2b = Ollama(base_url="http://127.0.0.1:11434", model="gemma:2b-instruct-q2_K")
 
 class LangChainRouterAgent:
     def __init__(self) -> None:
@@ -53,31 +57,36 @@ class LangChainRouterAgent:
         if not OPENAI_API_KEY:
             raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
 
-        self.router_llm = ChatOpenAI(
-            temperature=0.0,
-            name=ROUTER_MODEL,
-        )
-        self.device_llm = ChatOpenAI(
-            temperature=0.0,
-            name=DEVICE_MODEL,
-        )
-        self.query_llm = ChatOpenAI(
-            temperature=0.7,
-            model=QUERY_MODEL,
-        )
+        self.root_classifier = LLMChain(llm=gemma2b, prompt=ROOT_CLASSIFIER_PROMPT)
 
-        self.router_runnable = ROUTER_PROMPT | self.router_llm
-        self.device_runnable = DEVICE_PROMPT | self.device_llm
-        self.general_runnable = GENERAL_PROMPT | self.query_llm
+
+
+        # self.router_llm = ChatOpenAI(
+        #     temperature=0.0,
+        #     name=ROUTER_MODEL,
+        # )
+        # self.device_llm = ChatOpenAI(
+        #     temperature=0.0,
+        #     name=DEVICE_MODEL,
+        # )
+        # self.query_llm = ChatOpenAI(
+        #     temperature=0.7,
+        #     model=QUERY_MODEL,
+        # )
+
+        # self.router_runnable = ROOT_CLASSIFIER_PROMPT | self.router_llm
+        # self.device_runnable = DEVICE_PROMPT | self.device_llm
+        # self.general_runnable = GENERAL_PROMPT | self.query_llm
 
     def route(self, query: str) -> str:
         self.logger.info("Routing query: %s", query)
-        route_outcome = self._invoke(self.router_runnable, {"query": query}).strip().lower()
+        route_outcome = self._invoke(self.root_classifier, {"query": query}).strip().lower()
         self.logger.info("Routing decision: %s", route_outcome)
 
-        if route_outcome == "device":
-            return self._invoke(self.device_runnable, {"command": query}).strip()
-        return self._invoke(self.general_runnable, {"question": query}).strip()
+        return "Thanks!"
+        # if route_outcome == "device":
+        #     return self._invoke(self.device_runnable, {"command": query}).strip()
+        # return self._invoke(self.general_runnable, {"question": query}).strip()
 
     @staticmethod
     def _invoke(runnable, args: dict) -> str:
@@ -90,7 +99,6 @@ class LangChainRouterAgent:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     agent = LangChainRouterAgent()
     print("Welcome to the LangChain Router Agent! 👋")
     print("Type your query, or 'exit' to quit.")

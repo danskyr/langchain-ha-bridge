@@ -15,6 +15,7 @@ from homeassistant.helpers.intent import IntentResponseErrorCode
 
 from homeassistant.helpers import device_registry as dr, llm
 from .const import DOMAIN
+from .utils import get_host_from_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,15 +30,18 @@ async def async_setup_entry(
 
 
 class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
+    _attr_supports_streaming = True
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         super(AbstractConversationAgent, self).__init__()
         super(ConversationEntity, self).__init__()
         self.hass = hass
         self.entry = entry
-        self._name = "LangChain Conversation Agent"
+        self._name = f"LangChain Conversation Agent ({get_host_from_url(entry.data.get('url'))})"
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=self._name,
+            default_name="LangChain Conversation Agent",
             manufacturer="LangChain",
             model="Custom",
             entry_type=dr.DeviceEntryType.SERVICE,

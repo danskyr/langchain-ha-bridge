@@ -1,6 +1,7 @@
 {
   "domain": "langchain_conversation_agent_proxy",
   "name": "LangChain Remote Agent",
+  "version": "1.0.0",
   "codeowners": ["@danskyr", "@jackman3005"],
   "documentation": "https://github.com/danskyr/langchain-ha-bridge",
   "config_flow": true,

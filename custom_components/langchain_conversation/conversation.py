@@ -94,7 +94,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
 
             response = await session.post(
                 f"{url}/v1/completions",
-                json={"text": user_input.text},
+                json={"prompt": user_input.text},
                 timeout=aiohttp.ClientTimeout(total=timeout)
             )
 

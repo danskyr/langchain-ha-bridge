@@ -2,7 +2,7 @@
   "name": "LangChain Remote Agent",
   "content_in_root": false,
   "render_readme": true,
-  "domains": ["langchain_remote"],
+  "domains": ["langchain_conversation_agent_proxy"],
   "country": ["ALL"],
   "homeassistant": "2025.7.1",
   "iot_class": "local_push",

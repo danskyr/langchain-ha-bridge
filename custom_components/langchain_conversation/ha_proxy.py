@@ -8,8 +8,7 @@ from .const import DOMAIN
 
 class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
     def __init__(self, hass: HomeAssistant):
-        AbstractConversationAgent.__init__(self)
-        ConversationEntity.__init__(self, hass)
+        super.__init__(self)
         self.hass = hass
         self._name = "LangChain Remote Agent"
 
@@ -25,8 +24,8 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
 
     async def async_process(self, text: str, conversation_id=None, context=None) -> ConversationResult:
         """Process a sentence."""
-        entry_id = list(self._hass.data[DOMAIN].keys())[0]
-        url = self._hass.data[DOMAIN][entry_id].get("url", "http://127.0.0.1:8000/process")
+        entry_id = list(self.hass.data[DOMAIN].keys())[0]
+        url = self.hass.data[DOMAIN][entry_id].get("url", "http://127.0.0.1:8000/process")
 
         # fire off HTTP POST to your LangChain server
         resp = requests.post(url, json={"text": text}, timeout=10)

@@ -58,8 +58,10 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_confirm(self, user_input=None):
         """Confirm the configuration."""
         if user_input is not None or self.data:
+            url = self.data.get('url')
             return self.async_create_entry(
-                title=f"LangChain Conversation Agent API ({get_host_from_url(self.data['url'])})",
+                # title=f"LangChain Conversation Agent API ({get_host_from_url(self.data['url'])})",
+                title=f"LangChain Conversation Agent API ({get_host_from_url(url) if url else 'unknown'})",
                 description="LangChain Conversation Agent API",
                 data=self.data
             )

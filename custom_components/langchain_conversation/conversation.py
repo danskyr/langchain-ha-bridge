@@ -123,6 +123,9 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         except aiohttp.ClientSSLError:
             intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
                                             f"SSL Error when connecting to LangChain service.")
+        except aiohttp.ClientTimeout as err:
+            intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
+                                            f"LangChain service timed out. Error: {err}")
         except Exception as err:
             _LOGGER.error("Unexpected error testing connection: %s", err)
             intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,

@@ -1,4 +1,4 @@
-def get_host_from_url(self, url):
+def get_host_from_url(url):
     """Extract host from URL for title."""
     try:
         from urllib.parse import urlparse

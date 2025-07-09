@@ -37,7 +37,8 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         super(ConversationEntity, self).__init__()
         self.hass = hass
         self.entry = entry
-        self._name = f"LangChain Conversation Agent ({get_host_from_url(entry.data.get('url'))})"
+        # self._name = f"LangChain Conversation Agent ({get_host_from_url(entry.data.get('url'))})"
+        self._name = f"LangChain Conversation Agent"
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=self._name,

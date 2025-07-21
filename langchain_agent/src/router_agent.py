@@ -69,8 +69,8 @@ Question: {question}
 
 from langchain_community.llms import Ollama
 
-gemma2b = Ollama(base_url="http://127.0.0.1:11434", model="gemma:2b-instruct-q2_K")
-mistral7b = Ollama(base_url="http://127.0.0.1:11434", model="mistral7b")
+gemma2b = Ollama(base_url="http://localhost:11434", model="gemma:2b-instruct-q2_K")
+mistral7b = Ollama(base_url="http://localhost:11434", model="mistral:7b")
 
 class LangChainRouterAgent:
     def __init__(self) -> None:

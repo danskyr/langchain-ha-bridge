@@ -20,6 +20,7 @@ langchain-community = "0.3.27"
 langchain-openai = "0.3.27"
 dotenv = "0.9.9"
 langchain-tavily = "^0.2.7"
+langgraph = "^0.5.4"
 
 [tool.poetry.scripts]
 langchain-ha-bridge = "langchain_agent.src.__main__:main"

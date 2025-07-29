@@ -1,6 +1,8 @@
 import logging
 import os
-from typing import TypedDict, Literal
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import TypedDict, Literal, Optional, Dict, Any, List
 
 from dotenv import load_dotenv
 from langchain.chains.llm import LLMChain
@@ -23,18 +25,179 @@ DEVICE_MODEL = os.getenv("DEVICE_MODEL", "gpt-3.5-turbo")
 QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "gpt-4")
 
-ROOT_CLASSIFIER_PROMPT = PromptTemplate(
-    input_variables=["query"],
-    template="""
-You are an intelligent routing agent for a voice assistant. Classify the user's request into one of the following categories: 'IOT_COMMAND' (any simple command to turn on/off an IoT device) or 'ADVANCED_REQUEST' (everything else). Provide only the category.
 
-Request: "{query}"
+
+class RouteType(Enum):
+    IOT_COMMAND = "iot_command"
+    SEARCH_QUERY = "search_query"
+    GENERAL_QUERY = "general_query"
+
+
+class ResponseType(Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+    INFO = "info"
+
+
+class AgentState(TypedDict):
+    query: str
+    route_type: Optional[RouteType]
+    handler_data: Dict[str, Any] # todo might make it hard to use with context, since the overview of what type of data / source is gone. Maybe the key should be another enum. Or we need a dataclass
+    raw_response: str
+    final_response: str
+    response_type: ResponseType
+
+
+class BaseHandler(ABC):
+    """Abstract base class for all query handlers."""
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    @abstractmethod
+    def can_handle(self, query: str) -> bool:
+        """Determine if this handler can process the given query."""
+        pass
+
+    @abstractmethod
+    def get_route_type(self) -> RouteType:
+        """Return the route type this handler manages."""
+        pass
+
+    @abstractmethod
+    def process(self, state: AgentState) -> AgentState:
+        """Process the query and update the state with results."""
+        pass
+
+
+class ResponseFormatter:
+    """Unified response formatter for consistent tone and format."""
+    
+    def __init__(self, llm):
+        self.llm = llm
+        self.logger = logging.getLogger(__name__)
+        
+        self.format_prompt = PromptTemplate(
+            input_variables=["response", "response_type", "query"],
+            template="""
+You are a helpful and friendly voice assistant. Format the following response to be conversational, clear, and appropriate for voice interaction.
+
+Original Query: {query}
+Response Type: {response_type}
+Raw Response: {response}
+
+Format this response to be:
+- Conversational and natural
+- Clear and concise
+- Appropriate for voice interaction
+- Consistent in tone
+
+Formatted Response:
 """,
-)
+        )
+    
+    def format_response(self, state: AgentState) -> AgentState:
+        """Format the raw response into a consistent, user-friendly format."""
+        try:
+            if not state.get("raw_response"):
+                return {
+                    **state,
+                    "final_response": "I apologize, but I couldn't process your request. Please try asking again.",
+                    "response_type": ResponseType.ERROR
+                }
+            
+            chain = LLMChain(llm=self.llm, prompt=self.format_prompt)
+            result = chain.invoke({
+                "query": state["query"],
+                "response": state["raw_response"],
+                "response_type": state["response_type"].value
+            })
+            
+            formatted_response = result['text'].strip()
+            
+            return {
+                **state,
+                "final_response": formatted_response
+            }
+            
+        except Exception as e:
+            self.logger.error("Failed to format response: %s", e)
+            return {
+                **state,
+                "final_response": state.get("raw_response", "I encountered an error processing your request."),
+                "response_type": ResponseType.ERROR
+            }
 
-SEARCH_RESULTS_COMBINER_PROMPT = PromptTemplate(
-    input_variables=["query", "search_results"],
-    template="""
+
+from langchain_community.llms import Ollama
+
+class IOTHandler(BaseHandler):
+    """Handler for IoT device commands."""
+    
+    def __init__(self, llm):
+        super().__init__(llm)
+        self.classifier_prompt = PromptTemplate(
+            input_variables=["query"],
+            template="""
+Determine if this is a simple IoT device command (turn on/off, set temperature, etc.).
+Respond with only 'YES' or 'NO'.
+
+Query: "{query}"
+""",
+        )
+        
+        self.device_prompt = PromptTemplate(
+            input_variables=["command"],
+            template="""
+You are an IoT controller. Interpret the user command and output a Home Assistant service call payload in YAML.
+User Command: {command}
+Output only the YAML service call.
+""",
+        )
+    
+    def can_handle(self, query: str) -> bool:
+        try:
+            result = LLMChain(llm=self.llm, prompt=self.classifier_prompt).invoke({"query": query})
+            classification = result['text'].strip().upper()
+            return "YES" in classification
+        except Exception as e:
+            self.logger.error("Error in IOT classification: %s", e)
+            return False
+    
+    def get_route_type(self) -> RouteType:
+        return RouteType.IOT_COMMAND
+    
+    def process(self, state: AgentState) -> AgentState:
+        try:
+            result = LLMChain(llm=self.llm, prompt=self.device_prompt).invoke({"command": state["query"]})
+            response = result['text'].strip()
+            
+            return {
+                **state,
+                "raw_response": f"I'll help you control your device. {response}",
+                "response_type": ResponseType.SUCCESS,
+                "handler_data": {"yaml_output": response}
+            }
+        except Exception as e:
+            self.logger.error("Error processing IoT command: %s", e)
+            return {
+                **state,
+                "raw_response": "I couldn't process that device command. Please try rephrasing your request.",
+                "response_type": ResponseType.ERROR,
+                "handler_data": {"error": str(e)}
+            }
+
+
+class SearchHandler(BaseHandler):
+    """Handler for queries that require web search."""
+    
+    def __init__(self, llm, tavily_search):
+        super().__init__(llm)
+        self.tavily_search = tavily_search
+        self.combiner_prompt = PromptTemplate(
+            input_variables=["query", "search_results"],
+            template="""
 Review the user's query and relevant search results and craft a short answer to the user's query. Reply only with this answer.
 
 User's Query: 
@@ -47,34 +210,81 @@ Relevant Search Results:
 {search_results}
 ```
 """,
-)
+        )
+    
+    def can_handle(self, query: str) -> bool:
+        return True
+    
+    def get_route_type(self) -> RouteType:
+        return RouteType.SEARCH_QUERY
+    
+    def process(self, state: AgentState) -> AgentState:
+        try:
+            search_results = self.tavily_search.invoke({"query": state["query"]})
+            search_results_str = str(search_results)
+            
+            result = LLMChain(llm=self.llm, prompt=self.combiner_prompt).invoke({
+                "query": state["query"],
+                "search_results": search_results_str
+            })
+            
+            response = result['text'].strip()
+            
+            return {
+                **state,
+                "raw_response": response,
+                "response_type": ResponseType.INFO,
+                "handler_data": {"search_results": search_results_str}
+            }
+        except Exception as e:
+            self.logger.error("Error in search processing: %s", e)
+            return {
+                **state,
+                "raw_response": "I couldn't find information about that topic. Please try asking something else.",
+                "response_type": ResponseType.ERROR,
+                "handler_data": {"error": str(e)}
+            }
 
-DEVICE_PROMPT = PromptTemplate(
-    input_variables=["command"],
-    template="""
-You are an IoT controller. Interpret the user command and output a Home Assistant service call payload in YAML.
-User Command: {command}
-Output only the YAML service call.
-""",
-)
 
-GENERAL_PROMPT = PromptTemplate(
-    input_variables=["question"],
-    template="""
+class GeneralHandler(BaseHandler):
+    """Handler for general queries that don't require search."""
+    
+    def __init__(self, llm):
+        super().__init__(llm)
+        self.general_prompt = PromptTemplate(
+            input_variables=["question"],
+            template="""
 You are a helpful voice assistant. Answer the following question in clear, concise language.
 Question: {question}
 """,
-)
+        )
+    
+    def can_handle(self, query: str) -> bool:
+        return True
+    
+    def get_route_type(self) -> RouteType:
+        return RouteType.GENERAL_QUERY
+    
+    def process(self, state: AgentState) -> AgentState:
+        try:
+            result = LLMChain(llm=self.llm, prompt=self.general_prompt).invoke({"question": state["query"]})
+            response = result['text'].strip()
+            
+            return {
+                **state,
+                "raw_response": response,
+                "response_type": ResponseType.INFO,
+                "handler_data": {}
+            }
+        except Exception as e:
+            self.logger.error("Error in general processing: %s", e)
+            return {
+                **state,
+                "raw_response": "I don't have enough information to answer that question. Please try asking something else.",
+                "response_type": ResponseType.ERROR,
+                "handler_data": {"error": str(e)}
+            }
 
-
-class AgentState(TypedDict):
-    query: str
-    classification: str
-    search_results: str
-    final_response: str
-
-
-from langchain_community.llms import Ollama
 
 gemma2b = Ollama(base_url="http://localhost:11434", model="gemma:2b-instruct-q2_K")
 mistral7b = Ollama(base_url="http://localhost:11434", model="mistral:7b")
@@ -87,111 +297,82 @@ class LangChainRouterAgent:
         if not OPENAI_API_KEY:
             raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
 
-        self.root_classifier = LLMChain(llm=gemma2b, prompt=ROOT_CLASSIFIER_PROMPT)
-        self.search_results_combiner = LLMChain(llm=gemma2b, prompt=SEARCH_RESULTS_COMBINER_PROMPT)
-
         self.tavily_search = TavilySearch(
             tavily_api_key=TAVILY_API_KEY,
             max_results=5,
             topic="general"
         )
+        
+        self.handlers: List[BaseHandler] = [
+            IOTHandler(gemma2b),
+            SearchHandler(gemma2b, self.tavily_search),
+            GeneralHandler(gemma2b)
+        ]
+        
+        self.response_formatter = ResponseFormatter(gemma2b)
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(AgentState)
 
-        workflow.add_node("classify", self._classify_node)
-        workflow.add_node("search", self._search_node)
-        workflow.add_node("respond", self._respond_node)
+        # todo please advice on the best practice of this idea: each handler should be a node. and the handler nodes should be able to run in parallel. Then the final node that all handler nodes culminate in should be the final response node
+        workflow.add_node("route", self._route_node)
+        workflow.add_node("process", self._process_node)
+        workflow.add_node("format_response", self._format_response_node)
 
-        workflow.add_edge(START, "classify")
-        workflow.add_conditional_edges(
-            "classify",
-            self._should_search,
-            {
-                "search": "search",
-                "respond": "respond"
-            }
-        )
-        workflow.add_edge("search", "respond")
-        workflow.add_edge("respond", END)
+        workflow.add_edge(START, "route")
+        workflow.add_edge("route", "process")
+        workflow.add_edge("process", "format_response")
+        workflow.add_edge("format_response", END)
 
         return workflow.compile()
 
-    def _classify_node(self, state: AgentState) -> AgentState:
-        self.logger.info("Classifying query: %s", state["query"])
-
-        result = self.root_classifier.invoke({"query": state["query"]})
-        classification = result['text'].strip().lower()
-
-        self.logger.info("Classification result: %s", classification)
-
-        return {
-            **state,
-            "classification": classification
-        }
-
-    def _should_search(self, state: AgentState) -> Literal["search", "respond"]:
-        classification = state["classification"]
-
-        if "iot_command" in classification:
-            return "respond"
-
-        return "search"
-
-    def _search_node(self, state: AgentState) -> AgentState:
-        self.logger.info("Searching for: %s", state["query"])
-
-        try:
-            search_results = self.tavily_search.invoke({"query": state["query"]})
-            search_results_str = str(search_results)
-
-            self.logger.info("Search completed, found results")
-
-            return {
-                **state,
-                "search_results": search_results_str
-            }
-        except Exception as e:
-            self.logger.error("Search failed: %s", e)
-            return {
-                **state,
-                "search_results": "No search results available"
-            }
-
-    def _respond_node(self, state: AgentState) -> AgentState:
+    def _route_node(self, state: AgentState) -> AgentState:
+        """Determine which handler should process this query."""
         query = state["query"]
-        classification = state["classification"]
-        search_results = state.get("search_results", "")
+        self.logger.info("Routing query: %s", query)
 
-        self.logger.info("Generating response for classification: %s", classification)
-
-        if "iot_command" in classification:
-            response = f"IoT command detected: {query}. This would be processed by the device controller."
-        elif search_results and search_results != "No search results available":
-            result = self.search_results_combiner.invoke({
-                "query": query,
-                "search_results": search_results
-            })
-            response = result['text'].strip()
-        else:
-            response = "I don't have enough information to answer that question. Please try asking something else."
-
-        self.logger.info("Generated response: %s", response)
-
+        for handler in self.handlers: # todo should run them concurrently
+            if handler.can_handle(query):
+                route_type = handler.get_route_type()
+                self.logger.info("Query routed to: %s via %s", route_type.value, handler.__class__.__name__)
+                
+                return { # todo multiple handlers should actually be able to run
+                    **state,
+                    "route_type": route_type,
+                    "handler_data": {"selected_handler": handler}
+                }
+        
+        self.logger.warning("No handler found for query, defaulting to GeneralHandler")
         return {
             **state,
-            "final_response": response
+            "route_type": RouteType.GENERAL_QUERY,
+            "handler_data": {"selected_handler": self.handlers[-1]}
         }
+
+    def _process_node(self, state: AgentState) -> AgentState:
+        """Process the query using the selected handler."""
+        handler = state["handler_data"]["selected_handler"]
+        self.logger.info("Processing with handler: %s", handler.__class__.__name__)
+        
+        return handler.process(state)
+
+    def _format_response_node(self, state: AgentState) -> AgentState:
+        """Format the response for consistent user experience."""
+        self.logger.info("Formatting response for type: %s", state.get("response_type", "unknown"))
+        
+        return self.response_formatter.format_response(state)
 
     def route(self, query: str) -> str:
-        self.logger.info("Routing query: %s", query)
+        self.logger.info("Processing query: %s", query)
 
         initial_state = AgentState(
             query=query,
-            classification="",
-            search_results="",
-            final_response=""
+            route_type=None,
+            handler_data={},
+            raw_response="",
+            final_response="",
+            response_type=ResponseType.INFO
         )
 
         final_state = self.graph.invoke(initial_state)

@@ -50,11 +50,13 @@ cd services/ollama && docker-compose up -d
 ### Core Components
 
 **LangChain Router Agent** (`langchain_agent/src/router_agent.py`):
-- Uses LangGraph StateGraph for multi-step processing
-- Classifies queries as "IOT_COMMAND" or "ADVANCED_REQUEST" 
-- Integrates Ollama (gemma:2b-instruct-q2_K, mistral:7b) for local LLM processing
-- Uses Tavily Search for web queries on advanced requests
-- State management through `AgentState` TypedDict with query, classification, search_results, final_response
+- Clean extensible routing architecture with handler-based system
+- `BaseHandler` abstract class for easy extension to new query types
+- Three built-in handlers: `IOTHandler`, `SearchHandler`, `GeneralHandler`
+- `ResponseFormatter` provides unified tone and formatting across all responses
+- Uses LangGraph StateGraph: `route` → `process` → `format_response`
+- Handler selection based on `can_handle()` method for flexible routing
+- State management through `AgentState` with route_type, handler_data, raw_response, final_response, response_type
 
 **FastAPI Server** (`langchain_agent/src/server.py`):
 - Exposes `/v1/completions` endpoint compatible with OpenAI API format
@@ -87,13 +89,15 @@ The system requires multiple services:
 1. User input → Home Assistant conversation interface
 2. Home Assistant → FastAPI server `/v1/completions`
 3. FastAPI server → LangChain Router Agent
-4. Router Agent → Classification (IOT vs Advanced)
-5. If Advanced → Tavily Search → Response generation
-6. If IOT → Direct device command processing
-7. Response → FastAPI → Home Assistant → User
+4. Router Agent → Handler Selection (IOT, Search, or General)
+5. Selected Handler → Process Query
+6. Response Formatter → Unified formatting with consistent tone
+7. Formatted Response → FastAPI → Home Assistant → User
 
 ### Important File Locations
-- Main agent logic: `langchain_agent/src/router_agent.py:83-202`
+- Router agent architecture: `langchain_agent/src/router_agent.py:30-430`
+- Handler classes: `langchain_agent/src/router_agent.py:134-290`
+- Response formatter: `langchain_agent/src/router_agent.py:116-173`
 - FastAPI endpoints: `langchain_agent/src/server.py:73-106`
 - HA conversation handler: `custom_components/langchain_conversation/conversation.py:74-137`
 - Poetry configuration: `pyproject.toml`
@@ -105,3 +109,16 @@ The system requires multiple services:
 - LangGraph for stateful agent workflows
 - Async/await patterns throughout Home Assistant integration
 - Error handling includes specific Home Assistant IntentResponseErrorCode types
+
+### Adding New Handlers
+To extend the system with new routing capabilities:
+
+1. **Create Handler Class**: Inherit from `BaseHandler`
+2. **Implement Methods**:
+   - `can_handle(query: str) -> bool`: Classification logic
+   - `get_route_type() -> RouteType`: Return appropriate enum value
+   - `process(state: AgentState) -> AgentState`: Process the query
+3. **Add Route Type**: Extend `RouteType` enum if needed
+4. **Register Handler**: Add to `self.handlers` list in `LangChainRouterAgent.__init__()`
+
+The system automatically routes to the first handler that returns `True` from `can_handle()`.

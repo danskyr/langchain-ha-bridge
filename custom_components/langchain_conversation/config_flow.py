@@ -14,7 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 DATA_SCHEMA = vol.Schema({
     # vol.Required("url", default="http://127.0.0.1:8000", description="LangChain Service URL"): str,
     vol.Required("url", default="http://host.docker.internal:8001", description="LangChain Service URL"): str,
-    vol.Optional("timeout", default=10, description="Connection timeout (seconds)"): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+    vol.Optional("timeout", default=60, description="Connection timeout (seconds)"): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
     vol.Optional("verify_ssl", default=False, description="Verify SSL certificates"): bool,
 })
 

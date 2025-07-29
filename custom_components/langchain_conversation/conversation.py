@@ -5,6 +5,7 @@ import aiohttp
 from homeassistant.components import assist_pipeline, conversation as conversation
 from homeassistant.components.conversation import AbstractConversationAgent, ConversationResult, ConversationEntity, \
     async_get_chat_log
+from homeassistant.components.ollama.entity import _format_tool
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
@@ -14,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.intent import IntentResponseErrorCode
 
 from homeassistant.helpers import device_registry as dr, llm
+
 from .const import DOMAIN
 from .utils import get_host_from_url
 
@@ -93,13 +95,20 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         timeout = configuration.get("timeout", 10)
         verify_ssl = configuration.get("verify_ssl", True)
 
+        tools = []
+        if chat_log.llm_api:
+            tools = [
+                _format_tool(tool, chat_log.llm_api.custom_serializer)
+                for tool in chat_log.llm_api.tools
+            ]
+
         intent_response = intent.IntentResponse(language=user_input.language)
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
 
             response = await session.post(
                 f"{url}/v1/completions",
-                json={"prompt": user_input.text},
+                json={"prompt": user_input.text, "tools": tools},
                 timeout=aiohttp.ClientTimeout(total=timeout)
             )
 

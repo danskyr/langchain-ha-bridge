@@ -1,5 +1,5 @@
 # Big picture
-1. Focus on getting good basis
+1. Build a framework that acts as a solid basis for extending the code base to any use-case
 2. Split out into implementing use-cases (that could even be done independently)
 
 # Current

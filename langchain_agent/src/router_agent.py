@@ -97,7 +97,7 @@ Raw: {response}
 
 Given the Q (query) and Raw results rephrase as a short voice assistant response:
 Short:"""
-    )
+        )
 
     def format_response(self, state: AgentState) -> AgentState:
         """Format the raw response into a consistent, user-friendly format."""
@@ -135,6 +135,7 @@ Short:"""
 
 
 from langchain_community.llms import Ollama
+
 
 class IOTHandler(BaseHandler):
     """Handler for IoT device commands."""
@@ -201,19 +202,24 @@ class SearchHandler(BaseHandler):
         self.tavily_search = tavily_search
         self.combiner_prompt = PromptTemplate(
             input_variables=["query", "search_results"],
-            template="""
-Review the user's query and relevant search results and craft a short answer to the user's query. Reply only with this answer.
+            template="""You are an expert research analyst tasked with synthesizing search results to answer user queries accurately and comprehensively.
 
-User's Query: 
-```
-{query}
-```
-
-Relevant Search Results:
-```
+## Search Results
 {search_results}
-```
-""",
+
+## User Query
+{query}
+
+## Instructions
+Analyze the search results and provide a comprehensive response that:
+- Directly addresses the user's specific question
+- Synthesizes information from multiple sources when relevant
+- Maintains factual accuracy and cites key sources
+- Identifies any conflicting information or gaps in the data
+- Uses clear, organized formatting appropriate to the query type
+
+## Response
+Provide your analysis below:""",
         )
 
     def can_handle(self, query: str) -> bool:
@@ -224,8 +230,26 @@ Relevant Search Results:
 
     def process(self, state: AgentState) -> AgentState:
         try:
-            search_results = self.tavily_search.invoke({"query": state["query"]})
-            search_results_str = str(search_results)
+            tavily_response = self.tavily_search.invoke({"query": state["query"]})
+            all_results = tavily_response.get("results", [])
+
+            search_results = []
+            if all_results:
+                top_score = max(result.get('score', 0) for result in all_results)
+                min_score_threshold = top_score * 0.9
+
+                search_results = [
+                    result for result in all_results
+                    if result.get('score', 0) >= min_score_threshold
+                ]
+
+            search_results_str = ""
+            for result in search_results:
+                search_results_str += (
+                    f"# {result['title']}\n"
+                    f"## Relevance score\n{result['score']}\n"
+                    f"## Content\n{result['content']}\n---\n\n"
+                )
 
             result = LLMChain(llm=self.llm, prompt=self.combiner_prompt).invoke({
                 "query": state["query"],

@@ -2,7 +2,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TypedDict, Literal, Optional, Dict, Any, List
+from typing import TypedDict, Optional, Dict, Any, List
 
 from dotenv import load_dotenv
 from langchain.chains.llm import LLMChain
@@ -26,7 +26,6 @@ QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "gpt-4")
 
 
-
 class RouteType(Enum):
     IOT_COMMAND = "iot_command"
     SEARCH_QUERY = "search_query"
@@ -42,7 +41,8 @@ class ResponseType(Enum):
 class AgentState(TypedDict):
     query: str
     route_type: Optional[RouteType]
-    handler_data: Dict[str, Any] # todo might make it hard to use with context, since the overview of what type of data / source is gone. Maybe the key should be another enum. Or we need a dataclass
+    handler_data: Dict[
+        str, Any]  # todo might make it hard to use with context, since the overview of what type of data / source is gone. Maybe the key should be another enum. Or we need a dataclass
     raw_response: str
     final_response: str
     response_type: ResponseType
@@ -73,30 +73,32 @@ class BaseHandler(ABC):
 
 class ResponseFormatter:
     """Unified response formatter for consistent tone and format."""
-    
+
     def __init__(self, llm):
         self.llm = llm
         self.logger = logging.getLogger(__name__)
-        
+
         self.format_prompt = PromptTemplate(
-            input_variables=["response", "response_type", "query"],
-            template="""
-You are a helpful and friendly voice assistant. Format the following response to be conversational, clear, and appropriate for voice interaction.
+            input_variables=["response", "query"],
+            template="""Consider these examples:
+Examples:
+---
+Q: what's the weather?
+Raw: The weather in Oklahoma City is very hot, with temperatures between 73°F and 93°F.
+Short: It's very hot today, between 73 and 93 degrees.
+---
+Q: When did WW2 end?
+Raw: [long explanation about the war ending in 1945]
+Short: World War Two officially ended on September 2nd 1945.
+---
 
-Original Query: {query}
-Response Type: {response_type}
-Raw Response: {response}
+Q: {query}
+Raw: {response}
 
-Format this response to be:
-- Conversational and natural
-- Clear and concise
-- Appropriate for voice interaction
-- Consistent in tone
+Given the Q (query) and Raw results rephrase as a short voice assistant response:
+Short:"""
+    )
 
-Formatted Response:
-""",
-        )
-    
     def format_response(self, state: AgentState) -> AgentState:
         """Format the raw response into a consistent, user-friendly format."""
         try:
@@ -106,21 +108,23 @@ Formatted Response:
                     "final_response": "I apologize, but I couldn't process your request. Please try asking again.",
                     "response_type": ResponseType.ERROR
                 }
-            
+
+            self.logger.info(f"Raw response:\n{state["raw_response"]}")
+
             chain = LLMChain(llm=self.llm, prompt=self.format_prompt)
             result = chain.invoke({
                 "query": state["query"],
                 "response": state["raw_response"],
                 "response_type": state["response_type"].value
             })
-            
+
             formatted_response = result['text'].strip()
-            
+
             return {
                 **state,
                 "final_response": formatted_response
             }
-            
+
         except Exception as e:
             self.logger.error("Failed to format response: %s", e)
             return {
@@ -134,7 +138,7 @@ from langchain_community.llms import Ollama
 
 class IOTHandler(BaseHandler):
     """Handler for IoT device commands."""
-    
+
     def __init__(self, llm):
         super().__init__(llm)
         self.classifier_prompt = PromptTemplate(
@@ -146,7 +150,7 @@ Respond with only 'YES' or 'NO'.
 Query: "{query}"
 """,
         )
-        
+
         self.device_prompt = PromptTemplate(
             input_variables=["command"],
             template="""
@@ -155,7 +159,7 @@ User Command: {command}
 Output only the YAML service call.
 """,
         )
-    
+
     def can_handle(self, query: str) -> bool:
         try:
             result = LLMChain(llm=self.llm, prompt=self.classifier_prompt).invoke({"query": query})
@@ -164,15 +168,15 @@ Output only the YAML service call.
         except Exception as e:
             self.logger.error("Error in IOT classification: %s", e)
             return False
-    
+
     def get_route_type(self) -> RouteType:
         return RouteType.IOT_COMMAND
-    
+
     def process(self, state: AgentState) -> AgentState:
         try:
             result = LLMChain(llm=self.llm, prompt=self.device_prompt).invoke({"command": state["query"]})
             response = result['text'].strip()
-            
+
             return {
                 **state,
                 "raw_response": f"I'll help you control your device. {response}",
@@ -191,7 +195,7 @@ Output only the YAML service call.
 
 class SearchHandler(BaseHandler):
     """Handler for queries that require web search."""
-    
+
     def __init__(self, llm, tavily_search):
         super().__init__(llm)
         self.tavily_search = tavily_search
@@ -211,25 +215,25 @@ Relevant Search Results:
 ```
 """,
         )
-    
+
     def can_handle(self, query: str) -> bool:
         return True
-    
+
     def get_route_type(self) -> RouteType:
         return RouteType.SEARCH_QUERY
-    
+
     def process(self, state: AgentState) -> AgentState:
         try:
             search_results = self.tavily_search.invoke({"query": state["query"]})
             search_results_str = str(search_results)
-            
+
             result = LLMChain(llm=self.llm, prompt=self.combiner_prompt).invoke({
                 "query": state["query"],
                 "search_results": search_results_str
             })
-            
+
             response = result['text'].strip()
-            
+
             return {
                 **state,
                 "raw_response": response,
@@ -248,7 +252,7 @@ Relevant Search Results:
 
 class GeneralHandler(BaseHandler):
     """Handler for general queries that don't require search."""
-    
+
     def __init__(self, llm):
         super().__init__(llm)
         self.general_prompt = PromptTemplate(
@@ -258,18 +262,18 @@ You are a helpful voice assistant. Answer the following question in clear, conci
 Question: {question}
 """,
         )
-    
+
     def can_handle(self, query: str) -> bool:
         return True
-    
+
     def get_route_type(self) -> RouteType:
         return RouteType.GENERAL_QUERY
-    
+
     def process(self, state: AgentState) -> AgentState:
         try:
             result = LLMChain(llm=self.llm, prompt=self.general_prompt).invoke({"question": state["query"]})
             response = result['text'].strip()
-            
+
             return {
                 **state,
                 "raw_response": response,
@@ -288,6 +292,8 @@ Question: {question}
 
 gemma2b = Ollama(base_url="http://localhost:11434", model="gemma:2b-instruct-q2_K")
 mistral7b = Ollama(base_url="http://localhost:11434", model="mistral:7b")
+phi4 = Ollama(base_url="http://localhost:11434", model="phi4:latest")
+qwen3b = Ollama(base_url="http://localhost:11434", model="qwen2.5:3b")
 
 
 class LangChainRouterAgent:
@@ -302,14 +308,14 @@ class LangChainRouterAgent:
             max_results=5,
             topic="general"
         )
-        
+
         self.handlers: List[BaseHandler] = [
             IOTHandler(gemma2b),
-            SearchHandler(gemma2b, self.tavily_search),
+            SearchHandler(qwen3b, self.tavily_search),
             GeneralHandler(gemma2b)
         ]
-        
-        self.response_formatter = ResponseFormatter(gemma2b)
+
+        self.response_formatter = ResponseFormatter(qwen3b)
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -332,17 +338,17 @@ class LangChainRouterAgent:
         query = state["query"]
         self.logger.info("Routing query: %s", query)
 
-        for handler in self.handlers: # todo should run them concurrently
+        for handler in self.handlers:  # todo should run them concurrently
             if handler.can_handle(query):
                 route_type = handler.get_route_type()
                 self.logger.info("Query routed to: %s via %s", route_type.value, handler.__class__.__name__)
-                
-                return { # todo multiple handlers should actually be able to run
+
+                return {  # todo multiple handlers should actually be able to run
                     **state,
                     "route_type": route_type,
                     "handler_data": {"selected_handler": handler}
                 }
-        
+
         self.logger.warning("No handler found for query, defaulting to GeneralHandler")
         return {
             **state,
@@ -354,13 +360,13 @@ class LangChainRouterAgent:
         """Process the query using the selected handler."""
         handler = state["handler_data"]["selected_handler"]
         self.logger.info("Processing with handler: %s", handler.__class__.__name__)
-        
+
         return handler.process(state)
 
     def _format_response_node(self, state: AgentState) -> AgentState:
         """Format the response for consistent user experience."""
         self.logger.info("Formatting response for type: %s", state.get("response_type", "unknown"))
-        
+
         return self.response_formatter.format_response(state)
 
     def route(self, query: str) -> str:
@@ -378,7 +384,7 @@ class LangChainRouterAgent:
         final_state = self.graph.invoke(initial_state)
 
         response = final_state["final_response"]
-        self.logger.info("Final response: %s", response)
+        self.logger.info(f"Final response:\n{response}")
 
         return response
 

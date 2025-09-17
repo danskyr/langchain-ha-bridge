@@ -2,7 +2,7 @@
 import logging
 
 import aiohttp
-from homeassistant.components import assist_pipeline, conversation as conversation
+from homeassistant.components import conversation as conversation
 from homeassistant.components.conversation import AbstractConversationAgent, ConversationResult, ConversationEntity, \
     async_get_chat_log, AssistantContent
 from homeassistant.components.ollama.entity import _format_tool
@@ -234,9 +234,6 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
-        assist_pipeline.async_migrate_engine(
-            self.hass, "conversation", self.entry.entry_id, self.entity_id
-        )
         conversation.async_set_agent(self.hass, self.entry, self)
 
     async def async_will_remove_from_hass(self) -> None:

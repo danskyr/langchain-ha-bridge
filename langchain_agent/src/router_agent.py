@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import TypedDict, Optional, Dict, Any, List
@@ -7,6 +8,7 @@ from typing import TypedDict, Optional, Dict, Any, List
 from dotenv import load_dotenv
 from langchain.chains.llm import LLMChain
 from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 
@@ -41,11 +43,16 @@ class ResponseType(Enum):
 class AgentState(TypedDict):
     query: str
     route_type: Optional[RouteType]
-    handler_data: Dict[
-        str, Any]  # todo might make it hard to use with context, since the overview of what type of data / source is gone. Maybe the key should be another enum. Or we need a dataclass
+    handler_data: Dict[str, Any]
     raw_response: str
     final_response: str
     response_type: ResponseType
+    tools: Optional[List[Dict[str, Any]]]
+    tool_calls: Optional[List[Dict[str, Any]]]
+    tool_results: Optional[List[Dict[str, Any]]]
+    conversation_id: Optional[str]
+    messages: Optional[List[Dict[str, Any]]]
+    needs_tool_execution: bool
 
 
 class BaseHandler(ABC):
@@ -53,7 +60,16 @@ class BaseHandler(ABC):
 
     def __init__(self, llm):
         self.llm = llm
+        self.llm_with_tools = None
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    def bind_tools(self, tools: Optional[List[Dict[str, Any]]]):
+        """Bind tools to the LLM for this handler."""
+        if tools:
+            self.llm_with_tools = self.llm.bind_tools(tools)
+            self.logger.info(f"Bound {len(tools)} tools to {self.__class__.__name__}")
+        else:
+            self.llm_with_tools = self.llm
 
     @abstractmethod
     def can_handle(self, query: str) -> bool:
@@ -69,6 +85,82 @@ class BaseHandler(ABC):
     def process(self, state: AgentState) -> AgentState:
         """Process the query and update the state with results."""
         pass
+
+    def process_with_tools(self, state: AgentState) -> AgentState:
+        """Process query with tool support."""
+        if not self.llm_with_tools:
+            return self.process(state)
+
+        # Create message for LLM
+        messages = [HumanMessage(content=state["query"])]
+
+        # If we have previous messages, include them
+        if state.get("messages"):
+            # Convert dict messages back to LangChain message objects
+            for msg in state["messages"]:
+                if msg["type"] == "human":
+                    messages.append(HumanMessage(content=msg["content"]))
+                elif msg["type"] == "ai":
+                    messages.append(AIMessage(content=msg["content"], tool_calls=msg.get("tool_calls", [])))
+                elif msg["type"] == "tool":
+                    messages.append(ToolMessage(content=msg["content"], tool_call_id=msg["tool_call_id"]))
+
+        # Add tool results if any
+        if state.get("tool_results"):
+            for result in state["tool_results"]:
+                messages.append(ToolMessage(
+                    content=str(result.get("result", "")),
+                    tool_call_id=result.get("tool_call_id", "")
+                ))
+
+        try:
+            # Get LLM response
+            response = self.llm_with_tools.invoke(messages)
+
+            # Convert messages to serializable format for state
+            state["messages"] = []
+            for msg in messages:
+                if isinstance(msg, HumanMessage):
+                    state["messages"].append({"type": "human", "content": msg.content})
+                elif isinstance(msg, AIMessage):
+                    state["messages"].append({
+                        "type": "ai",
+                        "content": msg.content,
+                        "tool_calls": getattr(msg, 'tool_calls', [])
+                    })
+                elif isinstance(msg, ToolMessage):
+                    state["messages"].append({
+                        "type": "tool",
+                        "content": msg.content,
+                        "tool_call_id": msg.tool_call_id
+                    })
+
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                # LLM wants to call tools
+                tool_calls = []
+                for tc in response.tool_calls:
+                    tool_calls.append({
+                        "id": tc.get("id", str(uuid.uuid4())),
+                        "name": tc["name"],
+                        "args": tc["args"]
+                    })
+
+                state["tool_calls"] = tool_calls
+                state["needs_tool_execution"] = True
+                state["raw_response"] = response.content or ""
+                self.logger.info(f"LLM requested {len(tool_calls)} tool calls")
+            else:
+                # Final response
+                state["raw_response"] = response.content
+                state["needs_tool_execution"] = False
+                self.logger.info("LLM provided final response")
+
+        except Exception as e:
+            self.logger.error(f"Error processing with tools: {e}")
+            state["raw_response"] = f"Error processing request: {str(e)}"
+            state["needs_tool_execution"] = False
+
+        return state
 
 
 class ResponseFormatter:
@@ -412,6 +504,102 @@ class LangChainRouterAgent:
 
         return response
 
+    async def route_with_tools(self, query: str, tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Route query with tool support."""
+        self.logger.info(f"Processing query with tools: {query}")
+
+        conversation_id = str(uuid.uuid4())
+
+        # Create initial state
+        initial_state = AgentState(
+            query=query,
+            route_type=None,
+            handler_data={},
+            raw_response="",
+            final_response="",
+            response_type=ResponseType.INFO,
+            tools=tools,
+            tool_calls=None,
+            tool_results=None,
+            conversation_id=conversation_id,
+            messages=None,
+            needs_tool_execution=False
+        )
+
+        # Route to appropriate handler and bind tools
+        handler = None
+        for h in self.handlers:
+            if h.can_handle(query):
+                handler = h
+                break
+
+        if not handler:
+            return {
+                "type": "response",
+                "response": "I couldn't understand your request. Please try again."
+            }
+
+        # Bind tools to handler
+        handler.bind_tools(tools)
+
+        # Process with tools
+        processed_state = handler.process_with_tools(initial_state)
+
+        if processed_state.get("needs_tool_execution"):
+            # Return tool calls for execution
+            return {
+                "type": "tool_call",
+                "tool_calls": processed_state["tool_calls"],
+                "conversation_id": conversation_id
+            }
+        else:
+            # Format and return final response
+            formatted_state = self.formatter.format_response(processed_state)
+            return {
+                "type": "response",
+                "response": formatted_state["final_response"]
+            }
+
+    async def route_with_tool_results(
+        self,
+        query: str,
+        tools: Optional[List[Dict[str, Any]]],
+        tool_results: List[Dict[str, Any]],
+        conversation_id: Optional[str]
+    ) -> str:
+        """Continue conversation with tool results."""
+        self.logger.info(f"Processing tool results for conversation {conversation_id}")
+
+        # Create state with tool results
+        state = AgentState(
+            query=query,
+            route_type=None,
+            handler_data={},
+            raw_response="",
+            final_response="",
+            response_type=ResponseType.INFO,
+            tools=tools,
+            tool_calls=None,
+            tool_results=tool_results,
+            conversation_id=conversation_id,
+            messages=None,
+            needs_tool_execution=False
+        )
+
+        # Get the IOT handler (tool results likely come from IOT queries)
+        handler = self.handlers[0]  # IOTHandler is first
+        handler.bind_tools(tools)
+
+        # Process with tool results
+        processed_state = handler.process_with_tools(state)
+
+        # Format final response
+        formatted_state = self.formatter.format_response(processed_state)
+        return formatted_state["final_response"]
+
+
+# Store conversation states (in production, use Redis or similar)
+conversation_states = {}
 
 if __name__ == "__main__":
     agent = LangChainRouterAgent()

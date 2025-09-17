@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI
 # from langchain.chains.router import RouterChain
@@ -12,6 +12,9 @@ app = FastAPI()
 
 class OpenAITextCompletionRequest(BaseModel):
     prompt: str
+    tools: Optional[List[Dict[str, Any]]] = None
+    conversation_id: Optional[str] = None
+    tool_results: Optional[List[Dict[str, Any]]] = None
     # model: str
     # max_tokens: str
     # temperature: str
@@ -67,16 +70,43 @@ class OpenAICompatibleResponse(BaseModel):
 # }
 
 router_agent = LangChainRouterAgent()
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    args: Dict[str, Any]
+
 class OurResponse(BaseModel):
-    response: str
+    response: Optional[str] = None
+    type: str = "response"  # "response" or "tool_call"
+    tool_calls: Optional[List[ToolCall]] = None
+    conversation_id: Optional[str] = None
 
 @app.post("/v1/completions", response_model=OurResponse)
-def process(req: OpenAITextCompletionRequest):
+async def process(req: OpenAITextCompletionRequest):
     print("REQUEST", req)
-    response_text = router_agent.route(req.prompt)
-    return OurResponse(
-        response=response_text,
-    )
+
+    # If this is a tool result, continue conversation
+    if req.tool_results:
+        response_text = await router_agent.route_with_tool_results(
+            req.prompt, req.tools, req.tool_results, req.conversation_id
+        )
+        return OurResponse(response=response_text, type="response")
+
+    # Initial request with tools
+    result = await router_agent.route_with_tools(req.prompt, req.tools)
+
+    if result.get("type") == "tool_call":
+        return OurResponse(
+            type="tool_call",
+            tool_calls=[ToolCall(**tc) for tc in result["tool_calls"]],
+            conversation_id=result.get("conversation_id")
+        )
+    else:
+        return OurResponse(
+            response=result.get("response", "No response generated"),
+            type="response"
+        )
 
 
 # @app.post("/v1/completions", response_model=OpenAICompatibleResponse)

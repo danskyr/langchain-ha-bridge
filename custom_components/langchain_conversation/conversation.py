@@ -4,7 +4,7 @@ import logging
 import aiohttp
 from homeassistant.components import assist_pipeline, conversation as conversation
 from homeassistant.components.conversation import AbstractConversationAgent, ConversationResult, ConversationEntity, \
-    async_get_chat_log
+    async_get_chat_log, AssistantContent
 from homeassistant.components.ollama.entity import _format_tool
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -86,14 +86,22 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             user_input: conversation.ConversationInput,
             chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        # TODO: Use chat log to keep context and pass that along as well. Look into OpenAI Conversation here:
-        #       https://github.com/home-assistant/core/blob/dev/homeassistant/components/openai_conversation/conversation.py
-
         entry_id = list(self.hass.data[DOMAIN].keys())[0]
         configuration = self.hass.data[DOMAIN][entry_id]
         url = configuration.get("url")
         timeout = configuration.get("timeout", 10)
         verify_ssl = configuration.get("verify_ssl", True)
+
+        # Prepare LLM data if available
+        try:
+            await chat_log.async_provide_llm_data(
+                user_input.as_llm_context(DOMAIN),
+                user_llm_hass_api="assist",  # Use the assist API to get tools
+                user_llm_prompt=None,
+                user_extra_system_prompt=user_input.extra_system_prompt,
+            )
+        except conversation.ConverseError as err:
+            return err.as_conversation_result()
 
         tools = []
         if chat_log.llm_api:
@@ -103,9 +111,11 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             ]
 
         intent_response = intent.IntentResponse(language=user_input.language)
+
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
 
+            # Initial request to LangChain
             response = await session.post(
                 f"{url}/v1/completions",
                 json={"prompt": user_input.text, "tools": tools},
@@ -113,15 +123,27 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             )
 
             if response.status == 200:
-                try:
-                    response_body = await response.json()
-                    response_text = response_body["response"]
+                response_body = await response.json()
+
+                # Check if LangChain wants to execute tools
+                if response_body.get("type") == "tool_call" and response_body.get("tool_calls"):
+                    _LOGGER.info(f"LangChain requested {len(response_body['tool_calls'])} tool calls")
+
+                    # Execute tools and get results
+                    final_response = await self._execute_tools_and_continue(
+                        session, url, timeout, response_body, chat_log, user_input.text, tools
+                    )
+                    intent_response.async_set_speech(final_response)
+
+                elif response_body.get("type") == "response":
+                    # Direct response without tools
+                    response_text = response_body.get("response", "No response provided")
                     intent_response.async_set_speech(response_text)
-                except Exception:
-                    _LOGGER.error("Failed to parse as JSON and extract response from LangChain service: %s", await response.text())
-                    # intent_response.async_set_speech("Sorry, something went wrong.")
+
+                else:
+                    _LOGGER.error("Unknown response type from LangChain service: %s", response_body)
                     intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                                    "Failed to parse response from LangChain service.")
+                                                    "Invalid response format from LangChain service.")
             else:
                 intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
                                                 f"Invalid response from LangChain service. Status code: {response.status}")
@@ -136,7 +158,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
                                             f"LangChain service timed out. Error: {err}")
         except Exception as err:
-            _LOGGER.error("Unexpected error testing connection: %s", err)
+            _LOGGER.error("Unexpected error in message handling: %s", err)
             intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
                                             f"Unknown error when connecting to LangChain service.")
 
@@ -144,6 +166,70 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             response=intent_response,
             conversation_id=user_input.conversation_id,
         )
+
+    async def _execute_tools_and_continue(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        timeout: int,
+        tool_call_response: dict,
+        chat_log: conversation.ChatLog,
+        original_query: str,
+        tools: list
+    ) -> str:
+        """Execute tools via Home Assistant and continue conversation with LangChain."""
+
+        tool_calls = tool_call_response.get("tool_calls", [])
+        conversation_id = tool_call_response.get("conversation_id")
+
+        if not chat_log.llm_api:
+            return "Error: No LLM API available for tool execution"
+
+        try:
+            # Create assistant content with tool calls
+            assistant_content = AssistantContent(
+                agent_id=self.entity_id,
+                content="",  # No text content, just tool calls
+                tool_calls=[
+                    llm.ToolInput(
+                        id=tc.get("id", ""),
+                        tool_name=tc["name"],
+                        tool_args=tc["args"]
+                    ) for tc in tool_calls
+                ]
+            )
+
+            # Execute tools and collect results
+            tool_results = []
+            async for tool_result in chat_log.async_add_assistant_content(assistant_content):
+                _LOGGER.info(f"Tool {tool_result.tool_name} executed: {tool_result.tool_result}")
+                tool_results.append({
+                    "tool_call_id": tool_result.tool_call_id,
+                    "tool_name": tool_result.tool_name,
+                    "result": tool_result.tool_result
+                })
+
+            # Send tool results back to LangChain for final response
+            response = await session.post(
+                f"{url}/v1/completions",
+                json={
+                    "prompt": original_query,
+                    "tools": tools,
+                    "tool_results": tool_results,
+                    "conversation_id": conversation_id
+                },
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            )
+
+            if response.status == 200:
+                response_body = await response.json()
+                return response_body.get("response", "Tool execution completed but no response received")
+            else:
+                return f"Error getting final response: {response.status}"
+
+        except Exception as e:
+            _LOGGER.error(f"Error executing tools: {e}")
+            return f"Error executing tools: {str(e)}"
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""

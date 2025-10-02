@@ -182,11 +182,17 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         tool_calls = tool_call_response.get("tool_calls", [])
         conversation_id = tool_call_response.get("conversation_id")
 
+        _LOGGER.info(f"=== TOOL EXECUTION DEBUG ===")
+        _LOGGER.info(f"Tool calls to execute: {tool_calls}")
+        _LOGGER.info(f"Conversation ID: {conversation_id}")
+
         if not chat_log.llm_api:
+            _LOGGER.error("No LLM API available for tool execution")
             return "Error: No LLM API available for tool execution"
 
         try:
             # Create assistant content with tool calls
+            _LOGGER.info("Creating AssistantContent with tool calls")
             assistant_content = AssistantContent(
                 agent_id=self.entity_id,
                 content="",  # No text content, just tool calls
@@ -198,37 +204,62 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                     ) for tc in tool_calls
                 ]
             )
+            _LOGGER.info(f"AssistantContent created: {assistant_content}")
 
             # Execute tools and collect results
             tool_results = []
-            async for tool_result in chat_log.async_add_assistant_content(assistant_content):
-                _LOGGER.info(f"Tool {tool_result.tool_name} executed: {tool_result.tool_result}")
-                tool_results.append({
-                    "tool_call_id": tool_result.tool_call_id,
-                    "tool_name": tool_result.tool_name,
-                    "result": tool_result.tool_result
-                })
+            _LOGGER.info("Starting tool execution loop...")
+            try:
+                async for tool_result in chat_log.async_add_assistant_content(assistant_content):
+                    _LOGGER.info(f"Tool {tool_result.tool_name} executed: {tool_result.tool_result}")
+                    tool_results.append({
+                        "tool_call_id": tool_result.tool_call_id,
+                        "tool_name": tool_result.tool_name,
+                        "result": tool_result.tool_result
+                    })
+                _LOGGER.info(f"Tool execution loop completed. Collected {len(tool_results)} results")
+            except Exception as tool_exec_error:
+                _LOGGER.error(f"Error during tool execution loop: {tool_exec_error}", exc_info=True)
+                raise
+
+            _LOGGER.info(f"Tool results to send back: {tool_results}")
 
             # Send tool results back to LangChain for final response
+            _LOGGER.info("Sending tool results back to LangChain for final response")
+            request_body = {
+                "prompt": original_query,
+                "tools": tools,
+                "tool_results": tool_results,
+                "conversation_id": conversation_id
+            }
+            _LOGGER.info(f"Request body: {request_body}")
+
             response = await session.post(
                 f"{url}/v1/completions",
-                json={
-                    "prompt": original_query,
-                    "tools": tools,
-                    "tool_results": tool_results,
-                    "conversation_id": conversation_id
-                },
+                json=request_body,
                 timeout=aiohttp.ClientTimeout(total=timeout)
             )
 
+            _LOGGER.info(f"Response status: {response.status}")
+
             if response.status == 200:
                 response_body = await response.json()
-                return response_body.get("response", "Tool execution completed but no response received")
+                _LOGGER.info(f"Response body: {response_body}")
+
+                final_response = response_body.get("response")
+                if not final_response:
+                    _LOGGER.warning(f"No 'response' field in response body: {response_body}")
+                    return "Tool execution completed but no response received"
+
+                _LOGGER.info(f"Final response: {final_response}")
+                return final_response
             else:
-                return f"Error getting final response: {response.status}"
+                error_msg = f"Error getting final response: {response.status}"
+                _LOGGER.error(error_msg)
+                return error_msg
 
         except Exception as e:
-            _LOGGER.error(f"Error executing tools: {e}")
+            _LOGGER.error(f"Error executing tools: {e}", exc_info=True)
             return f"Error executing tools: {str(e)}"
 
     async def async_added_to_hass(self) -> None:

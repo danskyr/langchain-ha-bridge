@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from langchain.chains.llm import LLMChain
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_ollama import ChatOllama
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 
@@ -87,8 +88,13 @@ class BaseHandler(ABC):
         pass
 
     def process_with_tools(self, state: AgentState) -> AgentState:
+        # state['raw_response'] = '{"name": "HassGet", "parameters": {"domain": "light", "attributes": "state"}}'
+        # return state
+
+        self.logger.info(f"Attempting to process query with tools: {state['query']}")
         """Process query with tool support."""
         if not self.llm_with_tools:
+            self.logger.info(f"Missing llm_with_tools for {self.__class__.__name__}. Skipping tool processing.")
             return self.process(state)
 
         # Create message for LLM
@@ -114,8 +120,41 @@ class BaseHandler(ABC):
                 ))
 
         try:
+            self.logger.info(f"Invoking llm_with_tools with messages: {messages}")
             # Get LLM response
             response = self.llm_with_tools.invoke(messages)
+
+            # Comprehensive debug logging - print ALL response fields
+            self.logger.info("=" * 80)
+            self.logger.info("RESPONSE DEBUG INFO:")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Response type: {type(response)}")
+            self.logger.info(f"Response str: {str(response)}")
+            self.logger.info(f"Response repr: {repr(response)}")
+
+            # Try to get dict representation
+            if hasattr(response, 'dict'):
+                self.logger.info(f"Response.dict(): {response.dict()}")
+            if hasattr(response, '__dict__'):
+                self.logger.info(f"Response.__dict__: {response.__dict__}")
+
+            # Log specific attributes
+            self.logger.info(f"content: {getattr(response, 'content', 'N/A')}")
+            self.logger.info(f"tool_calls: {getattr(response, 'tool_calls', 'N/A')}")
+            self.logger.info(f"id: {getattr(response, 'id', 'N/A')}")
+            self.logger.info(f"response_metadata: {getattr(response, 'response_metadata', 'N/A')}")
+            self.logger.info(f"additional_kwargs: {getattr(response, 'additional_kwargs', 'N/A')}")
+
+            # Log all public attributes
+            public_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+            self.logger.info(f"All public attributes: {public_attrs}")
+
+            # Log each public attribute value
+            for attr in public_attrs:
+                if not callable(getattr(response, attr, None)):
+                    self.logger.info(f"  {attr} = {getattr(response, attr, 'N/A')}")
+
+            self.logger.info("=" * 80)
 
             # Convert messages to serializable format for state
             state["messages"] = []
@@ -153,7 +192,7 @@ class BaseHandler(ABC):
                 # Final response
                 state["raw_response"] = response.content
                 state["needs_tool_execution"] = False
-                self.logger.info("LLM provided final response")
+                self.logger.info(f"LLM provided final response: {response.content}")
 
         except Exception as e:
             self.logger.error(f"Error processing with tools: {e}")
@@ -253,14 +292,18 @@ Output only the YAML service call.
 """,
         )
 
+
     def can_handle(self, query: str) -> bool:
-        try:
-            result = LLMChain(llm=self.llm, prompt=self.classifier_prompt).invoke({"query": query})
-            classification = result['text'].strip().upper()
-            return "YES" in classification
-        except Exception as e:
-            self.logger.error("Error in IOT classification: %s", e)
-            return False
+        return True
+
+    # def can_handle(self, query: str) -> bool:
+    #     try:
+    #         result = LLMChain(llm=self.llm, prompt=self.classifier_prompt).invoke({"query": query})
+    #         classification = result['text'].strip().upper()
+    #         return "YES" in classification
+    #     except Exception as e:
+    #         self.logger.error("Error in IOT classification: %s", e)
+    #         return False
 
     def get_route_type(self) -> RouteType:
         return RouteType.IOT_COMMAND
@@ -416,22 +459,44 @@ class LangChainRouterAgent:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-        if not OPENAI_API_KEY:
-            raise EnvironmentError("OPENAI_API_KEY must be set in environment variables.")
-
-        self.tavily_search = TavilySearch(
-            tavily_api_key=TAVILY_API_KEY,
-            max_results=5,
-            topic="general"
+        # Initialize ChatOllama models for tool support
+        # Using your available models - qwen2.5:7b and mistral:7b have best tool support
+        self.chat_router = ChatOllama(
+            model="llama3.2:3b",
+            base_url="http://localhost:11434",
+            temperature=0
+        )
+        self.chat_device = ChatOllama(
+            model="mistral:7b",  # Mistral for device control
+            base_url="http://localhost:11434",
+            temperature=0
+        )
+        self.chat_query = ChatOllama(
+            model="qwen2.5:7b",  # Qwen for general queries
+            base_url="http://localhost:11434",
+            temperature=0
         )
 
-        self.handlers: List[BaseHandler] = [
-            IOTHandler(gemma2b),
-            SearchHandler(qwen3b, self.tavily_search),
-            GeneralHandler(gemma2b)
-        ]
+        # Tavily search is optional - comment out if not needed
+        if TAVILY_API_KEY:
+            self.tavily_search = TavilySearch(
+                tavily_api_key=TAVILY_API_KEY,
+                max_results=5,
+                topic="general"
+            )
+        else:
+            self.tavily_search = None
 
-        self.response_formatter = ResponseFormatter(qwen3b)
+        # Use ChatOllama models for handlers to support tools
+        self.handlers: List[BaseHandler] = [
+            IOTHandler(self.chat_router),
+            # SearchHandler(self.chat_router, self.tavily_search) if self.tavily_search else None,
+            # GeneralHandler(self.chat_query)
+        ]
+        # Remove None handler if search is disabled
+        self.handlers = [h for h in self.handlers if h is not None]
+
+        self.response_formatter = ResponseFormatter(self.chat_router)
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -554,7 +619,7 @@ class LangChainRouterAgent:
             }
         else:
             # Format and return final response
-            formatted_state = self.formatter.format_response(processed_state)
+            formatted_state = self.response_formatter.format_response(processed_state)
             return {
                 "type": "response",
                 "response": formatted_state["final_response"]
@@ -594,7 +659,7 @@ class LangChainRouterAgent:
         processed_state = handler.process_with_tools(state)
 
         # Format final response
-        formatted_state = self.formatter.format_response(processed_state)
+        formatted_state = self.response_formatter.format_response(processed_state)
         return formatted_state["final_response"]
 
 

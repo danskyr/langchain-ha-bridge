@@ -14,7 +14,7 @@ from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Keep root logger at WARNING to reduce library noise
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
@@ -22,11 +22,26 @@ dotenv_result = load_dotenv()
 if not dotenv_result:
     logging.warning(".env file not found or could not be loaded.")
 
+# Set up module-level logger with INFO level
+module_logger = logging.getLogger('langchain_agent')
+log_level = os.getenv('LANGCHAIN_LOG_LEVEL', 'INFO')
+module_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
 DEVICE_MODEL = os.getenv("DEVICE_MODEL", "gpt-3.5-turbo")
 QUERY_MODEL = os.getenv("QUERY_MODEL", "gpt-4")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "gpt-4")
+
+
+def preview_text(text: str, max_len: int = 600) -> str:
+    """Truncate text for logging, showing start and end for long content."""
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    half = (max_len - 5) // 2
+    return f"{text[:half]} ... {text[-half:]}"
 
 
 class RouteType(Enum):
@@ -62,13 +77,13 @@ class BaseHandler(ABC):
     def __init__(self, llm):
         self.llm = llm
         self.llm_with_tools = None
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(f'langchain_agent.{self.__class__.__name__}')
 
     def bind_tools(self, tools: Optional[List[Dict[str, Any]]]):
         """Bind tools to the LLM for this handler."""
         if tools:
             self.llm_with_tools = self.llm.bind_tools(tools)
-            self.logger.info(f"Bound {len(tools)} tools to {self.__class__.__name__}")
+            self.logger.debug(f"Bound {len(tools)} tools to {self.__class__.__name__}")
         else:
             self.llm_with_tools = self.llm
 
@@ -91,10 +106,10 @@ class BaseHandler(ABC):
         # state['raw_response'] = '{"name": "HassGet", "parameters": {"domain": "light", "attributes": "state"}}'
         # return state
 
-        self.logger.info(f"Attempting to process query with tools: {state['query']}")
         """Process query with tool support."""
+        self.logger.debug(f"[process_with_tools] Processing query: {state['query'][:50]}...")  # Log first 50 chars only
         if not self.llm_with_tools:
-            self.logger.info(f"Missing llm_with_tools for {self.__class__.__name__}. Skipping tool processing.")
+            self.logger.debug(f"[process_with_tools] No tools bound for {self.__class__.__name__}")
             return self.process(state)
 
         # Create message for LLM
@@ -120,41 +135,26 @@ class BaseHandler(ABC):
                 ))
 
         try:
-            self.logger.info(f"Invoking llm_with_tools with messages: {messages}")
+            # Get model name if available
+            model_name = getattr(self.llm_with_tools, 'model', getattr(self.llm_with_tools, 'model_name', 'unknown'))
+
+            # Log input
+            self.logger.info(f"  🤖 [process_with_tools] → {model_name}")
+            for i, msg in enumerate(messages):
+                msg_type = msg.__class__.__name__
+                content_preview = preview_text(str(msg.content), 450)
+                self.logger.info(f"     Msg {i+1} ({msg_type}): {content_preview}")
+
             # Get LLM response
             response = self.llm_with_tools.invoke(messages)
 
-            # Comprehensive debug logging - print ALL response fields
-            self.logger.info("=" * 80)
-            self.logger.info("RESPONSE DEBUG INFO:")
-            self.logger.info("=" * 80)
-            self.logger.info(f"Response type: {type(response)}")
-            self.logger.info(f"Response str: {str(response)}")
-            self.logger.info(f"Response repr: {repr(response)}")
-
-            # Try to get dict representation
-            if hasattr(response, 'dict'):
-                self.logger.info(f"Response.dict(): {response.dict()}")
-            if hasattr(response, '__dict__'):
-                self.logger.info(f"Response.__dict__: {response.__dict__}")
-
-            # Log specific attributes
-            self.logger.info(f"content: {getattr(response, 'content', 'N/A')}")
-            self.logger.info(f"tool_calls: {getattr(response, 'tool_calls', 'N/A')}")
-            self.logger.info(f"id: {getattr(response, 'id', 'N/A')}")
-            self.logger.info(f"response_metadata: {getattr(response, 'response_metadata', 'N/A')}")
-            self.logger.info(f"additional_kwargs: {getattr(response, 'additional_kwargs', 'N/A')}")
-
-            # Log all public attributes
-            public_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
-            self.logger.info(f"All public attributes: {public_attrs}")
-
-            # Log each public attribute value
-            for attr in public_attrs:
-                if not callable(getattr(response, attr, None)):
-                    self.logger.info(f"  {attr} = {getattr(response, attr, 'N/A')}")
-
-            self.logger.info("=" * 80)
+            # Log response
+            has_tools = bool(getattr(response, 'tool_calls', None))
+            if has_tools:
+                self.logger.info(f"  ← [process_with_tools] Response: Tool call(s) requested")
+            else:
+                response_preview = preview_text(response.content if response.content else "", 450)
+                self.logger.info(f"  ← [process_with_tools] Response: {response_preview}")
 
             # Convert messages to serializable format for state
             state["messages"] = []
@@ -188,15 +188,20 @@ class BaseHandler(ABC):
                 state["tool_calls"] = tool_calls
                 state["needs_tool_execution"] = True
                 state["raw_response"] = response.content or ""
-                self.logger.info(f"LLM requested {len(tool_calls)} tool calls")
+                self.logger.info(f"  🔧 [process_with_tools] Tool calls requested:")
+                for tc in tool_calls:
+                    args_str = ', '.join(f"{k}={v}" for k, v in list(tc['args'].items())[:3])  # Show first 3 args
+                    if len(tc['args']) > 3:
+                        args_str += ", ..."
+                    self.logger.info(f"     - {tc['name']}({args_str})")
             else:
                 # Final response
                 state["raw_response"] = response.content
                 state["needs_tool_execution"] = False
-                self.logger.info(f"LLM provided final response: {response.content}")
+                self.logger.info(f"  ✓ [process_with_tools] LLM provided final response")
 
         except Exception as e:
-            self.logger.error(f"Error processing with tools: {e}")
+            self.logger.error(f"[process_with_tools] Error: {e}")
             state["raw_response"] = f"Error processing request: {str(e)}"
             state["needs_tool_execution"] = False
 
@@ -208,7 +213,7 @@ class ResponseFormatter:
 
     def __init__(self, llm):
         self.llm = llm
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('langchain_agent.ResponseFormatter')
 
         self.format_prompt = PromptTemplate(
             input_variables=["response", "query"],
@@ -241,7 +246,10 @@ Short:"""
                     "response_type": ResponseType.ERROR
                 }
 
-            self.logger.info(f"Raw response:\n{state["raw_response"]}")
+            model_name = getattr(self.llm, 'model', getattr(self.llm, 'model_name', 'unknown'))
+
+            self.logger.info(f"  🤖 [format_response] → {model_name}")
+            self.logger.info(f"     Raw: {preview_text(state['raw_response'], 450)}")
 
             chain = LLMChain(llm=self.llm, prompt=self.format_prompt)
             result = chain.invoke({
@@ -251,6 +259,7 @@ Short:"""
             })
 
             formatted_response = result['text'].strip()
+            self.logger.info(f"  ← [format_response] Formatted: {preview_text(formatted_response, 450)}")
 
             return {
                 **state,
@@ -258,7 +267,7 @@ Short:"""
             }
 
         except Exception as e:
-            self.logger.error("Failed to format response: %s", e)
+            self.logger.error("[format_response] Failed to format: %s", e)
             return {
                 **state,
                 "final_response": state.get("raw_response", "I encountered an error processing your request."),
@@ -311,8 +320,15 @@ Output only the YAML service call.
 
     def process(self, state: AgentState) -> AgentState:
         try:
+            model_name = getattr(self.llm, 'model', getattr(self.llm, 'model_name', 'unknown'))
+
+            self.logger.info(f"  🤖 [IOTHandler.process] → {model_name}")
+            self.logger.info(f"     Query: {preview_text(state['query'], 450)}")
+
             result = LLMChain(llm=self.llm, prompt=self.device_prompt).invoke({"command": state["query"]})
             response = result['text'].strip()
+
+            self.logger.info(f"  ← [IOTHandler.process] Response: {preview_text(response, 450)}")
 
             return {
                 **state,
@@ -321,7 +337,7 @@ Output only the YAML service call.
                 "handler_data": {"yaml_output": response}
             }
         except Exception as e:
-            self.logger.error("Error processing IoT command: %s", e)
+            self.logger.error("[IOTHandler.process] Error: %s", e)
             return {
                 **state,
                 "raw_response": "I couldn't process that device command. Please try rephrasing your request.",
@@ -366,6 +382,8 @@ Provide your analysis below:""",
 
     def process(self, state: AgentState) -> AgentState:
         try:
+            self.logger.info(f"  🔍 [SearchHandler.process] Searching for: '{preview_text(state['query'], 450)}'")
+
             tavily_response = self.tavily_search.invoke({"query": state["query"]})
             all_results = tavily_response.get("results", [])
 
@@ -379,6 +397,8 @@ Provide your analysis below:""",
                     if result.get('score', 0) >= min_score_threshold
                 ]
 
+            self.logger.info(f"  ← [SearchHandler.process] Found {len(search_results)} relevant results")
+
             search_results_str = ""
             for result in search_results:
                 search_results_str += (
@@ -387,12 +407,16 @@ Provide your analysis below:""",
                     f"## Content\n{result['content']}\n---\n\n"
                 )
 
+            model_name = getattr(self.llm, 'model', getattr(self.llm, 'model_name', 'unknown'))
+            self.logger.info(f"  🤖 [SearchHandler.process] → {model_name} (synthesizing from {len(search_results_str)} chars)")
+
             result = LLMChain(llm=self.llm, prompt=self.combiner_prompt).invoke({
                 "query": state["query"],
                 "search_results": search_results_str
             })
 
             response = result['text'].strip()
+            self.logger.info(f"  ← [SearchHandler.process] Response: {preview_text(response, 450)}")
 
             return {
                 **state,
@@ -401,7 +425,7 @@ Provide your analysis below:""",
                 "handler_data": {"search_results": search_results_str}
             }
         except Exception as e:
-            self.logger.error("Error in search processing: %s", e)
+            self.logger.error("[SearchHandler.process] Error: %s", e)
             return {
                 **state,
                 "raw_response": "I couldn't find information about that topic. Please try asking something else.",
@@ -431,8 +455,15 @@ Question: {question}
 
     def process(self, state: AgentState) -> AgentState:
         try:
+            model_name = getattr(self.llm, 'model', getattr(self.llm, 'model_name', 'unknown'))
+
+            self.logger.info(f"  🤖 [GeneralHandler.process] → {model_name}")
+            self.logger.info(f"     Query: {preview_text(state['query'], 450)}")
+
             result = LLMChain(llm=self.llm, prompt=self.general_prompt).invoke({"question": state["query"]})
             response = result['text'].strip()
+
+            self.logger.info(f"  ← [GeneralHandler.process] Response: {preview_text(response, 450)}")
 
             return {
                 **state,
@@ -441,7 +472,7 @@ Question: {question}
                 "handler_data": {}
             }
         except Exception as e:
-            self.logger.error("Error in general processing: %s", e)
+            self.logger.error("[GeneralHandler.process] Error: %s", e)
             return {
                 **state,
                 "raw_response": "I don't have enough information to answer that question. Please try asking something else.",
@@ -458,7 +489,7 @@ qwen3b = Ollama(base_url="http://localhost:11434", model="qwen2.5:3b")
 
 class LangChainRouterAgent:
     def __init__(self) -> None:
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('langchain_agent.LangChainRouterAgent')
 
         # Initialize ChatOllama models for tool support
         # Using your available models - qwen2.5:7b and mistral:7b have best tool support
@@ -518,12 +549,12 @@ class LangChainRouterAgent:
     def _route_node(self, state: AgentState) -> AgentState:
         """Determine which handler should process this query."""
         query = state["query"]
-        self.logger.info("Routing query: %s", query)
+        self.logger.info("[_route_node] → Routing query: %s", query[:100] + "..." if len(query) > 100 else query)
 
         for handler in self.handlers:  # todo should run them concurrently
             if handler.can_handle(query):
                 route_type = handler.get_route_type()
-                self.logger.info("Query routed to: %s via %s", route_type.value, handler.__class__.__name__)
+                self.logger.info("[_route_node]   ↳ Routed to: %s", handler.__class__.__name__)
 
                 return {  # todo multiple handlers should actually be able to run
                     **state,
@@ -531,7 +562,7 @@ class LangChainRouterAgent:
                     "handler_data": {"selected_handler": handler}
                 }
 
-        self.logger.warning("No handler found for query, defaulting to GeneralHandler")
+        self.logger.warning("[_route_node]   ⚠ No specific handler found, using GeneralHandler")
         return {
             **state,
             "route_type": RouteType.GENERAL_QUERY,
@@ -541,18 +572,23 @@ class LangChainRouterAgent:
     def _process_node(self, state: AgentState) -> AgentState:
         """Process the query using the selected handler."""
         handler = state["handler_data"]["selected_handler"]
-        self.logger.info("Processing with handler: %s", handler.__class__.__name__)
+        self.logger.info("[_process_node]   → Processing with: %s", handler.__class__.__name__)
 
-        return handler.process(state)
+        result_state = handler.process(state)
+
+        # Log state transformation
+        self.logger.debug(f"[_process_node]   State: raw_response={len(result_state.get('raw_response', ''))} chars, response_type={result_state.get('response_type')}")
+
+        return result_state
 
     def _format_response_node(self, state: AgentState) -> AgentState:
         """Format the response for consistent user experience."""
-        self.logger.info("Formatting response for type: %s", state.get("response_type", "unknown"))
+        self.logger.debug("[_format_response_node] Formatting response")
 
         return self.response_formatter.format_response(state)
 
     def route(self, query: str) -> str:
-        self.logger.info("Processing query: %s", query)
+        self.logger.info(f"[route] 📥 Query: '{preview_text(query, 900)}'")
 
         initial_state = AgentState(
             query=query,
@@ -566,13 +602,14 @@ class LangChainRouterAgent:
         final_state = self.graph.invoke(initial_state)
 
         response = final_state["final_response"]
-        self.logger.info(f"Final response:\n{response}")
+        self.logger.info(f"[route] ✅ Final response: '{preview_text(response, 600)}'")
 
         return response
 
     async def route_with_tools(self, query: str, tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Route query with tool support."""
-        self.logger.info(f"Processing query with tools: {query}")
+        self.logger.info(f"[route_with_tools] 📥 Query: '{preview_text(query, 900)}'")
+        self.logger.info(f"[route_with_tools]    Tools available: {len(tools) if tools else 0}")
 
         conversation_id = str(uuid.uuid4())
 
@@ -613,6 +650,8 @@ class LangChainRouterAgent:
 
         if processed_state.get("needs_tool_execution"):
             # Return tool calls for execution
+            tool_count = len(processed_state["tool_calls"])
+            self.logger.info(f"[route_with_tools] 🔧 Returning {tool_count} tool call(s) for execution")
             return {
                 "type": "tool_call",
                 "tool_calls": processed_state["tool_calls"],
@@ -620,10 +659,12 @@ class LangChainRouterAgent:
             }
         else:
             # Format and return final response
-            formatted_state = self.response_formatter.format_response(processed_state)
+            # formatted_state = self.response_formatter.format_response(processed_state)
+            final_resp = processed_state["raw_response"]
+            self.logger.info(f"[route_with_tools] ✅ Final response: '{preview_text(final_resp, 600)}'")
             return {
                 "type": "response",
-                "response": formatted_state["final_response"]
+                "response": final_resp
             }
 
     async def route_with_tool_results(
@@ -634,7 +675,11 @@ class LangChainRouterAgent:
         conversation_id: Optional[str]
     ) -> str:
         """Continue conversation with tool results."""
-        self.logger.info(f"Processing tool results for conversation {conversation_id}")
+        self.logger.info(f"[route_with_tool_results] 🔧 Continuing conversation {conversation_id[:8] if conversation_id else 'N/A'}...")
+        self.logger.info(f"[route_with_tool_results]    Tool results: {len(tool_results)} result(s)")
+        for tr in tool_results:
+            result_preview = preview_text(str(tr.get('result', '')), 450)
+            self.logger.info(f"[route_with_tool_results]      - {tr.get('name', 'unknown')}: {result_preview}")
 
         # Create state with tool results
         state = AgentState(
@@ -657,11 +702,14 @@ class LangChainRouterAgent:
         handler.bind_tools(tools)
 
         # Process with tool results
+        self.logger.info(f"[route_with_tool_results]   → Processing {len(tool_results)} tool result(s)")
         processed_state = handler.process_with_tools(state)
 
         # Format final response
-        formatted_state = self.response_formatter.format_response(processed_state)
-        return formatted_state["final_response"]
+        # formatted_state = self.response_formatter.format_response(processed_state)
+        final_resp = processed_state["raw_response"]
+        self.logger.info(f"[route_with_tool_results] ✅ Final response: '{preview_text(final_resp, 600)}'")
+        return final_resp
 
 
 # Store conversation states (in production, use Redis or similar)

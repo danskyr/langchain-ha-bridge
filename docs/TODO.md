@@ -1,3 +1,8 @@
+# Next time
+- we got tools working
+- cleanup router_agent.py to get to use the graph with tools (also format_response is quite bad and needs to be improved)
+- we want to loop tool calls. So that if the most ideal tool hasn't been used, then on the response the LLM gets a chance to continue. E.g. for the query: `add an orange to my shopping list`
+
 # Big picture
 1. Build a framework that acts as a solid basis for extending the code base to any use-case
 2. Split out into implementing use-cases (that could even be done independently)

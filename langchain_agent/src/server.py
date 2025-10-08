@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI
@@ -6,6 +7,10 @@ from langchain.chains import LLMChain
 from pydantic import BaseModel
 
 from langchain_agent.src import LangChainRouterAgent
+
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 app = FastAPI()
 
@@ -84,25 +89,34 @@ class OurResponse(BaseModel):
 
 @app.post("/v1/completions", response_model=OurResponse)
 async def process(req: OpenAITextCompletionRequest):
-    print("REQUEST", req)
+    logger.info(f"🌐 Incoming request: {len(req.prompt)} chars, has_tools={bool(req.tools)}, has_results={bool(req.tool_results)}")
+    logger.debug(f"Full request: {req}")
 
     # If this is a tool result, continue conversation
     if req.tool_results:
+        logger.info(f"  ↳ [process] Continuing conversation {req.conversation_id[:8] if req.conversation_id else 'N/A'}...")
         response_text = await router_agent.route_with_tool_results(
             req.prompt, req.tools, req.tool_results, req.conversation_id
         )
+        logger.info(f"  ✓ [process] Final response generated")
+        logger.info(f"  ← [process] Returning HTTP 200 with response")
         return OurResponse(response=response_text, type="response")
 
     # Initial request with tools
+    logger.info(f"  ↳ [process] Starting new conversation...")
     result = await router_agent.route_with_tools(req.prompt, req.tools)
 
     if result.get("type") == "tool_call":
+        logger.info(f"  🔧 [process] Returning {len(result.get('tool_calls', []))} tool calls")
+        logger.info(f"  ← [process] Returning HTTP 200 with tool calls")
         return OurResponse(
             type="tool_call",
             tool_calls=[ToolCall(**tc) for tc in result["tool_calls"]],
             conversation_id=result.get("conversation_id")
         )
     else:
+        logger.info(f"  ✓ [process] Returning final response")
+        logger.info(f"  ← [process] Returning HTTP 200 with response")
         return OurResponse(
             response=result.get("response", "No response generated"),
             type="response"

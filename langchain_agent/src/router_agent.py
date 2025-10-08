@@ -181,7 +181,8 @@ class BaseHandler(ABC):
                     tool_calls.append({
                         "id": tc.get("id", str(uuid.uuid4())),
                         "name": tc["name"],
-                        "args": tc["args"]
+                        # Filter out None values - HA doesn't accept None for optional parameters
+                        "args": {k: v for k, v in tc["args"].items() if v is not None}
                     })
 
                 state["tool_calls"] = tool_calls

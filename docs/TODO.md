@@ -1,7 +1,9 @@
 # Next time
-- we got tools working
-- cleanup router_agent.py to get to use the graph with tools (also format_response is quite bad and needs to be improved)
-- we want to loop tool calls. So that if the most ideal tool hasn't been used, then on the response the LLM gets a chance to continue. E.g. for the query: `add an orange to my shopping list`
+- Claude code report to continue
+- tools re-implemented 
+- search doesn't work
+- turning on lights doesn't work
+- Check Session-Report-2025-10-22.md
 
 # Big picture
 1. Build a framework that acts as a solid basis for extending the code base to any use-case

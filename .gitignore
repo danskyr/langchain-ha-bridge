@@ -3,3 +3,5 @@ __pycache__
 .env
 services/*/data
 models
+logs/
+!logs/README.md

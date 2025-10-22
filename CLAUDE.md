@@ -45,18 +45,55 @@ cd services/piper && docker-compose up -d
 cd services/ollama && docker-compose up -d
 ```
 
+### Debugging and Logs
+
+The application uses comprehensive file-based logging for easy debugging:
+
+```bash
+# View today's conversations (most useful for debugging)
+cat logs/conversations/$(date +%Y-%m-%d).log
+
+# Follow live logs
+tail -f logs/langchain_agent.log
+
+# View recent errors
+tail -n 50 logs/langchain_agent_errors.log
+
+# Search for specific conversation
+grep -A 20 "conversation_id" logs/conversations/*.log
+```
+
+**Log Files:**
+- `logs/langchain_agent.log` - Main application log (all events)
+- `logs/langchain_agent_errors.log` - Errors only
+- `logs/conversations/YYYY-MM-DD.log` - Daily human-readable conversation logs
+
+**Configuration:**
+```bash
+# Set log level in .env
+LANGCHAIN_LOG_LEVEL=INFO  # Options: DEBUG, INFO, WARNING, ERROR
+```
+
+See `docs/Logging.md` for detailed documentation.
+
 ## Architecture Overview
 
 ### Core Components
 
-**LangChain Router Agent** (`langchain_agent/src/router_agent.py`):
-- Clean extensible routing architecture with handler-based system
-- `BaseHandler` abstract class for easy extension to new query types
-- Three built-in handlers: `IOTHandler`, `SearchHandler`, `GeneralHandler`
-- `ResponseFormatter` provides unified tone and formatting across all responses
-- Uses LangGraph StateGraph: `route` → `process` → `format_response`
-- Handler selection based on `can_handle()` method for flexible routing
-- State management through `AgentState` with route_type, handler_data, raw_response, final_response, response_type
+**LangChain Router Agent V2** (`langchain_agent/src/router_agent_v2.py`) - **Current Implementation**:
+- LangGraph StateGraph with checkpointing for distributed tool execution
+- Parallel handler execution (IOT, Search, General can run concurrently)
+- State management with automatic message merging using reducers
+- Proper tool integration with bind_tools() and interrupt support
+- Maintains conversation state across HTTP calls using thread-based checkpointing
+- Graph structure: `router` → `[parallel handlers]` → `aggregator` → `agent` → `{tools?}` → `formatter`
+- Supports multiple rounds of tool calls with Home Assistant
+
+**LangChain Router Agent V1** (`langchain_agent/src/router_agent.py`) - **Legacy**:
+- Original implementation with linear graph flow
+- Handler-based system with `BaseHandler` abstract class
+- Three handlers: `IOTHandler`, `SearchHandler`, `GeneralHandler`
+- Note: Does not maintain state between tool execution rounds
 
 **FastAPI Server** (`langchain_agent/src/server.py`):
 - Exposes `/v1/completions` endpoint compatible with OpenAI API format
@@ -95,11 +132,14 @@ The system requires multiple services:
 7. Formatted Response → FastAPI → Home Assistant → User
 
 ### Important File Locations
-- Router agent architecture: `langchain_agent/src/router_agent.py:30-430`
-- Handler classes: `langchain_agent/src/router_agent.py:134-290`
-- Response formatter: `langchain_agent/src/router_agent.py:116-173`
-- FastAPI endpoints: `langchain_agent/src/server.py:73-106`
+- **Current router agent**: `langchain_agent/src/router_agent_v2.py` (with checkpointing)
+- Legacy router agent: `langchain_agent/src/router_agent.py`
+- FastAPI server with logging: `langchain_agent/src/server.py`
 - HA conversation handler: `custom_components/langchain_conversation/conversation.py:74-137`
+- Logging documentation: `docs/Logging.md`
+- Conversation logs: `logs/conversations/YYYY-MM-DD.log`
+- Main application log: `logs/langchain_agent.log`
+- Error log: `logs/langchain_agent_errors.log`
 - Poetry configuration: `pyproject.toml`
 - Docker services: `services/*/docker-compose.yml`
 

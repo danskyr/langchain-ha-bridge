@@ -1,14 +1,112 @@
 import logging
+import os
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 from fastapi import FastAPI
 # from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
 from pydantic import BaseModel
 
-from langchain_agent.src import LangChainRouterAgent
+from langchain_agent.src.router_agent_v2 import LangChainRouterAgentV2
 
-# Set up logging
+
+def setup_file_logging():
+    """
+    Set up comprehensive file logging for easy debugging.
+
+    Creates:
+    - logs/langchain_agent.log - All logs (rotating, max 10MB, keep 5 backups)
+    - logs/langchain_agent_errors.log - Error logs only
+    - logs/conversations/YYYY-MM-DD.log - Daily conversation logs
+    """
+    # Create logs directory
+    log_dir = Path(__file__).parent.parent.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+
+    # Create conversations subdirectory
+    conversations_dir = log_dir / "conversations"
+    conversations_dir.mkdir(exist_ok=True)
+
+    # Detailed formatter with timestamps
+    detailed_formatter = logging.Formatter(
+        fmt='%(asctime)s | %(name)-30s | %(levelname)-8s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Simple formatter for conversation logs
+    conversation_formatter = logging.Formatter(
+        fmt='%(asctime)s | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
+    # Root logger configuration
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Remove existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # 1. Main rotating log file - All logs
+    main_file_handler = RotatingFileHandler(
+        log_dir / "langchain_agent.log",
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    main_file_handler.setLevel(logging.INFO)
+    main_file_handler.setFormatter(detailed_formatter)
+    root_logger.addHandler(main_file_handler)
+
+    # 2. Error-only log file
+    error_file_handler = RotatingFileHandler(
+        log_dir / "langchain_agent_errors.log",
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(detailed_formatter)
+    root_logger.addHandler(error_file_handler)
+
+    # 3. Daily conversation log file
+    today = datetime.now().strftime("%Y-%m-%d")
+    conversation_file_handler = logging.FileHandler(
+        conversations_dir / f"{today}.log",
+        encoding='utf-8'
+    )
+    conversation_file_handler.setLevel(logging.INFO)
+    conversation_file_handler.setFormatter(conversation_formatter)
+
+    # Create a separate logger for conversations
+    conversation_logger = logging.getLogger('conversations')
+    conversation_logger.setLevel(logging.INFO)
+    conversation_logger.addHandler(conversation_file_handler)
+    conversation_logger.propagate = False  # Don't propagate to root
+
+    # 4. Console handler for development
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(detailed_formatter)
+    root_logger.addHandler(console_handler)
+
+    # Log startup
+    root_logger.info("=" * 80)
+    root_logger.info("File logging initialized")
+    root_logger.info(f"Main log: {log_dir / 'langchain_agent.log'}")
+    root_logger.info(f"Error log: {log_dir / 'langchain_agent_errors.log'}")
+    root_logger.info(f"Conversation log: {conversations_dir / f'{today}.log'}")
+    root_logger.info("=" * 80)
+
+    return logging.getLogger('conversations')
+
+
+# Initialize file logging
+conversation_logger = setup_file_logging()
+
+# Set up module logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -74,7 +172,7 @@ class OpenAICompatibleResponse(BaseModel):
 #   }
 # }
 
-router_agent = LangChainRouterAgent()
+router_agent = LangChainRouterAgentV2()
 
 class ToolCall(BaseModel):
     id: str
@@ -89,26 +187,46 @@ class OurResponse(BaseModel):
 
 @app.post("/v1/completions", response_model=OurResponse)
 async def process(req: OpenAITextCompletionRequest):
+    # Log to both main and conversation logs
+    conv_id = req.conversation_id or "new"
     logger.info(f"🌐 Incoming request: {len(req.prompt)} chars, has_tools={bool(req.tools)}, has_results={bool(req.tool_results)}")
     logger.debug(f"Full request: {req}")
 
-    # If this is a tool result, continue conversation
+    # Detailed conversation logging
+    conversation_logger.info("=" * 80)
+    conversation_logger.info(f"📥 NEW REQUEST | Conversation: {conv_id[:8]}...")
+    conversation_logger.info(f"Query: {req.prompt[:200]}{'...' if len(req.prompt) > 200 else ''}")
+    conversation_logger.info(f"Has tools: {bool(req.tools)} ({len(req.tools) if req.tools else 0} tools)")
+    conversation_logger.info(f"Has tool results: {bool(req.tool_results)} ({len(req.tool_results) if req.tool_results else 0} results)")
+
     if req.tool_results:
-        logger.info(f"  ↳ [process] Continuing conversation {req.conversation_id[:8] if req.conversation_id else 'N/A'}...")
-        response_text = await router_agent.route_with_tool_results(
-            req.prompt, req.tools, req.tool_results, req.conversation_id
-        )
-        logger.info(f"  ✓ [process] Final response generated")
-        logger.info(f"  ← [process] Returning HTTP 200 with response")
-        return OurResponse(response=response_text, type="response")
+        conversation_logger.info("Tool Results:")
+        for i, result in enumerate(req.tool_results, 1):
+            tool_name = result.get('tool_name', 'unknown')
+            result_preview = str(result.get('result', ''))[:100]
+            conversation_logger.info(f"  {i}. {tool_name}: {result_preview}{'...' if len(str(result.get('result', ''))) > 100 else ''}")
 
-    # Initial request with tools
-    logger.info(f"  ↳ [process] Starting new conversation...")
-    result = await router_agent.route_with_tools(req.prompt, req.tools)
+    # Use unified process method that handles both initial and continuation calls
+    result = await router_agent.process(
+        query=req.prompt,
+        tools=req.tools,
+        conversation_id=req.conversation_id,
+        tool_results=req.tool_results
+    )
 
+    # Return appropriate response based on result type
     if result.get("type") == "tool_call":
         logger.info(f"  🔧 [process] Returning {len(result.get('tool_calls', []))} tool calls")
         logger.info(f"  ← [process] Returning HTTP 200 with tool calls")
+
+        # Log tool calls to conversation log
+        conversation_logger.info(f"🔧 TOOL CALLS REQUESTED: {len(result.get('tool_calls', []))}")
+        for i, tc in enumerate(result.get('tool_calls', []), 1):
+            args_preview = str(tc.get('args', {}))[:100]
+            conversation_logger.info(f"  {i}. {tc['name']}({args_preview}{'...' if len(str(tc.get('args', {}))) > 100 else ''})")
+        conversation_logger.info(f"Conversation ID: {result.get('conversation_id')}")
+        conversation_logger.info("=" * 80 + "\n")
+
         return OurResponse(
             type="tool_call",
             tool_calls=[ToolCall(**tc) for tc in result["tool_calls"]],
@@ -117,8 +235,15 @@ async def process(req: OpenAITextCompletionRequest):
     else:
         logger.info(f"  ✓ [process] Returning final response")
         logger.info(f"  ← [process] Returning HTTP 200 with response")
+
+        # Log final response to conversation log
+        response_text = result.get("response", "No response generated")
+        conversation_logger.info(f"✅ FINAL RESPONSE:")
+        conversation_logger.info(f"   {response_text[:300]}{'...' if len(response_text) > 300 else ''}")
+        conversation_logger.info("=" * 80 + "\n")
+
         return OurResponse(
-            response=result.get("response", "No response generated"),
+            response=response_text,
             type="response"
         )
 

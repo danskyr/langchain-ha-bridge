@@ -217,6 +217,13 @@ async def process(req: OpenAITextCompletionRequest):
     # Return appropriate response based on result type
     if result.get("type") == "tool_call":
         logger.info(f"  🔧 [process] Returning {len(result.get('tool_calls', []))} tool calls")
+
+        # Log full tool call details to main log for debugging
+        for i, tc in enumerate(result.get('tool_calls', []), 1):
+            logger.info(f"  🔧   Tool call #{i}: {tc['name']}")
+            logger.info(f"  🔧     ID: {tc.get('id', 'no-id')}")
+            logger.info(f"  🔧     Args: {tc.get('args', {})}")
+
         logger.info(f"  ← [process] Returning HTTP 200 with tool calls")
 
         # Log tool calls to conversation log

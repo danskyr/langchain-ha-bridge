@@ -1,9 +1,20 @@
 # Next time
-- Claude code report to continue
-- tools re-implemented 
-- search doesn't work
-- turning on lights doesn't work
-- Check Session-Report-2025-10-22.md
+- Review last session report.
+- Test out tools and identify bugs as well as opportunities for improvement.
+- Get weather working. Looks like it may need to call the `GetLiveContext` tool, but the tool description does not seem to give enough context that weather could be retrieved or specifically what context can be retrieved. Do we have a list of entities/devices when we are called? Maybe we can split this into multiple psuedo tools to raise awareness of options to the LLM.
+
+```
+> Tell me about the state of my home.
+< I couldn't find a suitable tool to check the state of your home right now. Let's try another request. What would you like to know about your home?
+```
+
+
+# Last time
+- Saw tool calls with invalid args. Now we validate args and send back to LLM with error for it to correct. 2 retries allowed.
+- Improved brevity of tool result summary responses to the user.
+- Moved tavily search from a node in the graph to another tool in the list of tools. Tool calls to tavily are handled within the API and not sent back to HA as it is a local tool.
+
+
 
 # Big picture
 1. Build a framework that acts as a solid basis for extending the code base to any use-case

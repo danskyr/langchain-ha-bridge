@@ -494,7 +494,26 @@ class LangChainRouterAgentV2:
         if has_tool_results:
             # We have tool results - generate final natural language response
             self.logger.info("[agent] Tool results detected, generating final response")
-            response = self.chat_device.invoke(messages)
+
+            # Add concise system prompt for voice assistant
+            system_prompt = SystemMessage(content="""You are a voice assistant. Generate brief, natural responses for completed actions.
+
+Guidelines:
+- Be concise and conversational
+- Confirm what was done without extra explanation
+- Use natural phrasing ("I've added..." not "I have successfully added...")
+- Don't add phrases like "It should now be..." or "You have saved"
+- For errors, explain briefly what went wrong
+
+Examples:
+- "I've added apple to your shopping list"
+- "The bedroom light is on"
+- "Done"
+- "I couldn't find that device"
+""")
+
+            messages_with_system = [system_prompt] + messages
+            response = self.chat_device.invoke(messages_with_system)
             return {
                 "messages": [response]
             }

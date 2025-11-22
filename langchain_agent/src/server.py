@@ -293,32 +293,108 @@ async def test_connection():
 @app.post("/v1/completions/stream")
 async def process_stream(req: OpenAITextCompletionRequest):
     """
-    Streaming endpoint that yields preliminary responses followed by final response.
+    Streaming endpoint that uses LangGraph's native streaming to yield events.
 
     Uses Server-Sent Events (SSE) format.
     """
+    import uuid
+
     async def generate():
-        conv_id = req.conversation_id or "new"
-        logger.info(f"🌐 Streaming request: {len(req.prompt)} chars")
+        conv_id = req.conversation_id or str(uuid.uuid4())
+        logger.info(f"🌐 Streaming request: {len(req.prompt)} chars, conv_id: {conv_id[:8]}...")
 
-        # Yield preliminary response immediately for certain query types
-        # TODO: Make this smarter - detect if query will take time (e.g., web search, multiple tools)
-        preliminary = "One moment while I look that up for you..."
-        yield f"data: {json.dumps({'type': 'preliminary', 'content': preliminary})}\n\n"
+        try:
+            # Use LangGraph's streaming capabilities
+            thread_id = conv_id
+            config = {"configurable": {"thread_id": thread_id}}
 
-        # Process the actual query
-        result = await router_agent.process(
-            query=req.prompt,
-            tools=req.tools,
-            conversation_id=req.conversation_id,
-            tool_results=req.tool_results
-        )
+            if req.tool_results:
+                # Resuming with tool results
+                from langchain_core.messages import ToolMessage
 
-        # Yield the final result
-        if result.get("type") == "tool_call":
-            yield f"data: {json.dumps({'type': 'tool_call', 'tool_calls': result['tool_calls'], 'conversation_id': result.get('conversation_id')})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'response', 'response': result.get('response'), 'continue_conversation': result.get('continue_conversation')})}\n\n"
+                tool_messages = []
+                for result in req.tool_results:
+                    tool_messages.append(
+                        ToolMessage(
+                            content=str(result.get("result", "")),
+                            tool_call_id=result.get("tool_call_id", "")
+                        )
+                    )
+
+                state_update = {
+                    "messages": tool_messages,
+                    "validation_attempts": 1
+                }
+
+                # Stream events as they happen
+                async for event in router_agent.graph.astream_events(state_update, config, version="v2"):
+                    # Check for preliminary messages in state updates
+                    if event["event"] == "on_chain_stream" and event.get("data"):
+                        chunk = event["data"].get("chunk", {})
+
+                        # Stream preliminary messages immediately
+                        if preliminary_msgs := chunk.get("preliminary_messages"):
+                            for msg in preliminary_msgs:
+                                logger.info(f"Streaming preliminary: {msg}")
+                                yield f"data: {json.dumps({'type': 'preliminary', 'content': msg})}\n\n"
+
+                        # Stream any explicit streaming events
+                        if streaming_events := chunk.get("streaming_events"):
+                            for evt in streaming_events:
+                                logger.info(f"Streaming event: {evt}")
+                                yield f"data: {json.dumps(evt)}\n\n"
+
+            else:
+                # New conversation
+                from langchain_core.messages import HumanMessage
+
+                initial_state = {
+                    "messages": [HumanMessage(content=req.prompt)],
+                    "query": req.prompt,
+                    "route_types": [],
+                    "handler_responses": [],
+                    "final_response": None,
+                    "tools": req.tools,
+                    "validation_attempts": 1,
+                    "preliminary_messages": [],
+                    "streaming_events": []
+                }
+
+                # Stream events as they happen
+                async for event in router_agent.graph.astream_events(initial_state, config, version="v2"):
+                    # Check for preliminary messages in state updates
+                    if event["event"] == "on_chain_stream" and event.get("data"):
+                        chunk = event["data"].get("chunk", {})
+
+                        # Stream preliminary messages immediately
+                        if preliminary_msgs := chunk.get("preliminary_messages"):
+                            for msg in preliminary_msgs:
+                                logger.info(f"Streaming preliminary: {msg}")
+                                yield f"data: {json.dumps({'type': 'preliminary', 'content': msg})}\n\n"
+
+                        # Stream any explicit streaming events
+                        if streaming_events := chunk.get("streaming_events"):
+                            for evt in streaming_events:
+                                logger.info(f"Streaming event: {evt}")
+                                yield f"data: {json.dumps(evt)}\n\n"
+
+            # Get the final result
+            result = await router_agent.process(
+                query=req.prompt,
+                tools=req.tools,
+                conversation_id=conv_id,
+                tool_results=req.tool_results
+            )
+
+            # Yield the final result
+            if result.get("type") == "tool_call":
+                yield f"data: {json.dumps({'type': 'tool_call', 'tool_calls': result['tool_calls'], 'conversation_id': result.get('conversation_id')})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'response', 'response': result.get('response'), 'continue_conversation': result.get('continue_conversation')})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
         yield "data: [DONE]\n\n"
 

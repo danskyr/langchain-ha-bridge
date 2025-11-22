@@ -13,3 +13,5 @@ class RouterState(TypedDict):
     tools: Optional[List[Dict[str, Any]]]
     validation_attempts: int
     continue_conversation: Optional[bool]
+    preliminary_messages: Annotated[List[str], operator.add]  # Accumulated preliminary messages
+    streaming_events: Annotated[List[Dict[str, Any]], operator.add]  # SSE events to stream

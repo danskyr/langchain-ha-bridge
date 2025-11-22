@@ -4,6 +4,7 @@ from .aggregator import aggregator_node
 from .agent import create_agent_node
 from .validation import create_validation_node, validation_decision, separate_tool_calls
 from .formatter import formatter_node
+from .announcement import announcement_node
 
 __all__ = [
     "router_node",
@@ -16,4 +17,5 @@ __all__ = [
     "validation_decision",
     "separate_tool_calls",
     "formatter_node",
+    "announcement_node",
 ]

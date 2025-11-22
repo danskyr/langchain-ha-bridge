@@ -197,6 +197,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
             nonlocal api_continue_conversation, tool_calls_pending
 
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
+            accumulated_content = []  # Track all content pieces
 
             try:
                 async with session.post(
@@ -212,45 +213,77 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                     # Start new assistant message
                     yield {"role": "assistant"}
 
-                    async for line in response.content:
-                        line = line.decode('utf-8').strip()
-                        if not line or not line.startswith('data: '):
-                            continue
+                    # Buffer for partial SSE data
+                    buffer = ""
 
-                        data = line[6:]  # Remove 'data: ' prefix
-                        if data == '[DONE]':
-                            break
+                    async for chunk in response.content:
+                        buffer += chunk.decode('utf-8')
 
-                        try:
-                            event = json.loads(data)
-                            event_type = event.get('type')
+                        # Process complete lines from buffer
+                        while '\n' in buffer:
+                            line, buffer = buffer.split('\n', 1)
+                            line = line.strip()
 
-                            if event_type == 'preliminary':
-                                # Stream preliminary text
-                                content = event.get('content', '')
-                                _LOGGER.info(f"Streaming preliminary: {content}")
-                                yield {"content": content + " "}
+                            if not line or not line.startswith('data: '):
+                                continue
 
-                            elif event_type == 'response':
-                                # Stream final response
-                                content = event.get('response', '')
-                                api_continue_conversation = event.get('continue_conversation')
-                                _LOGGER.info(f"Streaming response: {content[:50]}...")
-                                yield {"content": content}
+                            data = line[6:]  # Remove 'data: ' prefix
+                            if data == '[DONE]':
+                                return
 
-                            elif event_type == 'tool_call':
-                                # Tool calls need special handling - can't stream these
-                                tool_calls_pending = event
-                                _LOGGER.info(f"Received tool calls in stream")
-                                yield {"content": "Processing..."}
+                            try:
+                                event = json.loads(data)
+                                event_type = event.get('type')
 
-                        except json.JSONDecodeError as e:
-                            _LOGGER.error(f"Failed to parse SSE event: {e}")
-                            continue
+                                if event_type == 'preliminary':
+                                    # Stream preliminary text with space separator
+                                    content = event.get('content', '')
+                                    _LOGGER.info(f"Streaming preliminary: {content}")
+                                    accumulated_content.append(content)
+                                    yield {"content": content + " "}
 
+                                elif event_type == 'response':
+                                    # Stream final response
+                                    content = event.get('response', '')
+                                    api_continue_conversation = event.get('continue_conversation')
+                                    _LOGGER.info(f"Streaming final response: {content[:50]}...")
+
+                                    # If we had preliminary content, add a separator
+                                    if accumulated_content:
+                                        # Remove the preliminary text if the final response includes it
+                                        preliminary_text = " ".join(accumulated_content)
+                                        if not content.startswith(preliminary_text):
+                                            # Final response doesn't include preliminary, keep both
+                                            yield {"content": content}
+                                        else:
+                                            # Final response includes preliminary, skip the duplicate
+                                            remaining = content[len(preliminary_text):].lstrip()
+                                            if remaining:
+                                                yield {"content": remaining}
+                                    else:
+                                        yield {"content": content}
+
+                                elif event_type == 'tool_call':
+                                    # Tool calls need special handling
+                                    tool_calls_pending = event
+                                    _LOGGER.info(f"Received tool calls in stream")
+                                    # Don't yield "Processing..." as it will be part of audio
+
+                                elif event_type == 'error':
+                                    error_content = event.get('content', 'Unknown error')
+                                    _LOGGER.error(f"Stream error: {error_content}")
+                                    yield {"content": f"Error: {error_content}"}
+
+                            except json.JSONDecodeError as e:
+                                _LOGGER.error(f"Failed to parse SSE event: {e}, data: {data}")
+                                continue
+
+            except asyncio.TimeoutError:
+                _LOGGER.error(f"Streaming timeout after {timeout} seconds")
+                yield {"content": "Request timed out. Please try again."}
             except aiohttp.ClientError as e:
                 _LOGGER.error(f"Streaming error: {e}")
-                yield {"role": "assistant", "content": f"Connection error: {e}"}
+                yield {"content": f"Connection error: {str(e)}"}
 
         try:
             # Stream content through chat_log

@@ -5,6 +5,7 @@ import aiohttp
 from homeassistant.components import conversation as conversation
 from homeassistant.components.conversation import AbstractConversationAgent, ConversationResult, ConversationEntity, \
     async_get_chat_log, AssistantContent
+from homeassistant.components.conversation.util import async_get_result_from_chat_log
 from homeassistant.components.ollama.entity import _format_tool
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -110,7 +111,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                 for tool in chat_log.llm_api.tools
             ]
 
-        intent_response = intent.IntentResponse(language=user_input.language)
+        response_text = None
 
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
@@ -130,42 +131,35 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                     _LOGGER.info(f"LangChain requested {len(response_body['tool_calls'])} tool calls")
 
                     # Execute tools and get results
-                    final_response = await self._execute_tools_and_continue(
+                    response_text = await self._execute_tools_and_continue(
                         session, url, timeout, response_body, chat_log, user_input.text, tools
                     )
-                    intent_response.async_set_speech(final_response)
 
                 elif response_body.get("type") == "response":
                     # Direct response without tools
                     response_text = response_body.get("response", "No response provided")
-                    intent_response.async_set_speech(response_text)
 
                 else:
                     _LOGGER.error("Unknown response type from LangChain service: %s", response_body)
-                    intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                                    "Invalid response format from LangChain service.")
+                    response_text = "Invalid response format from LangChain service."
             else:
-                intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                                f"Invalid response from LangChain service. Status code: {response.status}")
+                response_text = f"Invalid response from LangChain service. Status code: {response.status}"
 
         except aiohttp.ClientConnectorError:
-            intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                            f"Connection to LangChain service refused.")
+            response_text = "Connection to LangChain service refused."
         except aiohttp.ClientSSLError:
-            intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                            f"SSL Error when connecting to LangChain service.")
+            response_text = "SSL Error when connecting to LangChain service."
         except aiohttp.ClientTimeout as err:
-            intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                            f"LangChain service timed out. Error: {err}")
+            response_text = f"LangChain service timed out. Error: {err}"
         except Exception as err:
             _LOGGER.error("Unexpected error in message handling: %s", err)
-            intent_response.async_set_error(IntentResponseErrorCode.FAILED_TO_HANDLE,
-                                            f"Unknown error when connecting to LangChain service.")
+            response_text = "Unknown error when connecting to LangChain service."
 
-        return ConversationResult(
-            response=intent_response,
-            conversation_id=user_input.conversation_id,
+        # Add response to chat_log and return result
+        chat_log.async_add_assistant_content_without_tools(
+            AssistantContent(agent_id=self.entity_id, content=response_text or "")
         )
+        return async_get_result_from_chat_log(user_input, chat_log)
 
     async def _execute_tools_and_continue(
         self,

@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, Any, List, TYPE_CHECKING
 from langchain_core.messages import AIMessage
@@ -10,19 +11,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('langchain_agent.nodes.validation')
 
+# Known local tools - everything else is assumed to be a Home Assistant tool
+LOCAL_TOOLS = {"tavily_web_search"}
+
 
 def separate_tool_calls(tool_calls: List[Dict[str, Any]]) -> tuple:
     """
-    Separate HA tools from local tools by name prefix.
+    Separate HA tools from local tools.
 
-    HA tools start with "Hass" (e.g., HassListAddItem, HassTurnOn)
-    Local tools are our tools (e.g., tavily_web_search)
+    Local tools are explicitly listed in LOCAL_TOOLS.
+    Everything else is assumed to be a Home Assistant tool.
 
     Returns:
         Tuple of (ha_tools, local_tools)
     """
-    ha_tools = [tc for tc in tool_calls if tc.get("name", "").startswith("Hass")]
-    local_tools = [tc for tc in tool_calls if not tc.get("name", "").startswith("Hass")]
+    local_tools = [tc for tc in tool_calls if tc.get("name", "") in LOCAL_TOOLS]
+    ha_tools = [tc for tc in tool_calls if tc.get("name", "") not in LOCAL_TOOLS]
 
     logger.info(f"[separate_tool_calls] HA: {len(ha_tools)}, Local: {len(local_tools)}")
 
@@ -72,6 +76,10 @@ def create_validation_node(agent_instance: 'LangChainRouterAgentV2'):
             if not tool_schema:
                 logger.warning(f"[validation] No schema found for tool: {tool_name}")
                 continue
+
+            # Log the full tool schema for debugging
+            logger.info(f"[validation] Tool schema for {tool_name}:\n{json.dumps(tool_schema, indent=2)}")
+            logger.info(f"[validation] Tool args provided: {json.dumps(tool_args, indent=2)}")
 
             error_msg = validate_tool_call(
                 tool_name=tool_name,

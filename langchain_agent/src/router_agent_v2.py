@@ -220,11 +220,14 @@ class LangChainRouterAgentV2:
                 }
 
         final_response = result.get("final_response", "No response generated")
+        continue_conversation = result.get("continue_conversation")
         self.logger.info(f"[process] Returning final response: {preview_text(final_response, 100)}")
+        self.logger.info(f"[process] continue_conversation: {continue_conversation}")
 
         return {
             "type": "response",
-            "response": final_response
+            "response": final_response,
+            "continue_conversation": continue_conversation
         }
 
 

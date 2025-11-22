@@ -16,6 +16,7 @@ DATA_SCHEMA = vol.Schema({
     vol.Required("url", default="http://host.docker.internal:8001", description="LangChain Service URL"): str,
     vol.Optional("timeout", default=90, description="Connection timeout (seconds)"): vol.All(vol.Coerce(int), vol.Range(min=1, max=180)),
     vol.Optional("verify_ssl", default=False, description="Verify SSL certificates"): bool,
+    vol.Optional("streaming", default=False, description="Enable streaming for preliminary responses"): bool,
 })
 
 class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -163,6 +164,10 @@ class LangChainRemoteOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(
                     "verify_ssl",
                     default=self.config_entry.options.get("verify_ssl", False)
+                ): bool,
+                vol.Optional(
+                    "streaming",
+                    default=self.config_entry.options.get("streaming", False)
                 ): bool,
             })
         )

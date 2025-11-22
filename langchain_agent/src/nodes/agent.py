@@ -57,13 +57,51 @@ Examples:
 
 IMPORTANT: When the user asks you to perform an action or needs current information, you MUST call the appropriate tool. Do not just describe what you would do - actually call the tool.
 
-Examples:
-- "Add milk to shopping list" → Call HassListAddItem tool
-- "Turn on the lights" → Call HassTurnOn tool
-- "What's the weather today?" → Call tavily_web_search tool
-- "What happened in the news yesterday?" → Call tavily_web_search tool
+## Understanding Context
 
-Always prefer using tools over generating a text-only response when a tool is available.""")
+The user's message may contain device state information in a format like:
+- entity_id 'Name' = state
+- Examples: "weather.forecast_home 'Forecast Home' = partlycloudy;17.6 °C;83%"
+- "light.bedroom 'Bedroom' = on;100%"
+
+If you see this device information, you can use it directly to answer questions about home state without calling a tool.
+
+## Tool Usage Guidelines
+
+### Controlling Lights
+For lights, use the 'domain' parameter, NOT 'device_class':
+- HassTurnOn({'name': 'bedroom light'}) - turn on by name
+- HassTurnOn({'domain': ['light'], 'area': 'bedroom'}) - turn on all lights in an area
+- HassTurnOff({'domain': ['light'], 'floor': 'upstairs'}) - turn off all lights on a floor
+
+IMPORTANT: 'light' is NOT a valid device_class. Use 'domain': ['light'] for lights.
+
+### Controlling Switches/Outlets
+For switches and outlets, use device_class:
+- HassTurnOn({'device_class': ['switch'], 'name': 'fan'})
+- HassTurnOn({'device_class': ['outlet'], 'area': 'garage'})
+
+### Shopping Lists and To-Do Lists
+- HassListAddItem({'item': 'milk', 'name': 'Shopping List'})
+- todo_get_items({'todo_list': 'Shopping List'})
+
+### Weather and Home State
+- If weather.* entity data is in the context, use it directly
+- If not, use tavily_web_search for weather, news, or current events
+- For "state of my home" questions, summarize the device states in the context
+
+### Getting Real-time Data
+- Use GetLiveContext when you need current values not in the provided context
+- Use HassGetState for specific device states
+
+## Quick Examples
+- "Turn on the bedroom light" → HassTurnOn({'name': 'bedroom light'})
+- "Turn off all lights" → HassTurnOff({'domain': ['light']})
+- "Add milk to shopping list" → HassListAddItem({'item': 'milk', 'name': 'Shopping List'})
+- "What's the weather?" → Check for weather.* in context, otherwise use tavily_web_search
+- "State of my home" → Summarize device states from context
+
+Always prefer using context information when available, then tools, over generating a text-only response.""")
 
             messages_with_system = [system_prompt] + messages
 

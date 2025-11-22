@@ -6,9 +6,12 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 # from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
 from pydantic import BaseModel
+import json
+import asyncio
 
 from langchain_agent.src.router_agent_v2 import LangChainRouterAgentV2
 
@@ -184,6 +187,7 @@ class OurResponse(BaseModel):
     type: str = "response"  # "response" or "tool_call"
     tool_calls: Optional[List[ToolCall]] = None
     conversation_id: Optional[str] = None
+    continue_conversation: Optional[bool] = None
 
 @app.post("/v1/completions", response_model=OurResponse)
 async def process(req: OpenAITextCompletionRequest):
@@ -245,13 +249,17 @@ async def process(req: OpenAITextCompletionRequest):
 
         # Log final response to conversation log
         response_text = result.get("response", "No response generated")
+        continue_conversation = result.get("continue_conversation")
         conversation_logger.info(f"✅ FINAL RESPONSE:")
         conversation_logger.info(f"   {response_text[:300]}{'...' if len(response_text) > 300 else ''}")
+        if continue_conversation is not None:
+            conversation_logger.info(f"   continue_conversation: {continue_conversation}")
         conversation_logger.info("=" * 80 + "\n")
 
         return OurResponse(
             response=response_text,
-            type="response"
+            type="response",
+            continue_conversation=continue_conversation
         )
 
 
@@ -280,3 +288,45 @@ async def health_check():
 async def test_connection():
     """Test endpoint for Home Assistant integration."""
     return {"status": "ok", "message": "Connection successful"}
+
+
+@app.post("/v1/completions/stream")
+async def process_stream(req: OpenAITextCompletionRequest):
+    """
+    Streaming endpoint that yields preliminary responses followed by final response.
+
+    Uses Server-Sent Events (SSE) format.
+    """
+    async def generate():
+        conv_id = req.conversation_id or "new"
+        logger.info(f"🌐 Streaming request: {len(req.prompt)} chars")
+
+        # Yield preliminary response immediately for certain query types
+        # TODO: Make this smarter - detect if query will take time (e.g., web search, multiple tools)
+        preliminary = "One moment while I look that up for you..."
+        yield f"data: {json.dumps({'type': 'preliminary', 'content': preliminary})}\n\n"
+
+        # Process the actual query
+        result = await router_agent.process(
+            query=req.prompt,
+            tools=req.tools,
+            conversation_id=req.conversation_id,
+            tool_results=req.tool_results
+        )
+
+        # Yield the final result
+        if result.get("type") == "tool_call":
+            yield f"data: {json.dumps({'type': 'tool_call', 'tool_calls': result['tool_calls'], 'conversation_id': result.get('conversation_id')})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'response', 'response': result.get('response'), 'continue_conversation': result.get('continue_conversation')})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )

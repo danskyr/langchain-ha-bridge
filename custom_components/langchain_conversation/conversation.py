@@ -1,11 +1,14 @@
 """Conversation platform for LangChain Remote."""
+import json
 import logging
+from typing import AsyncGenerator
 
 import aiohttp
 from homeassistant.components import conversation as conversation
 from homeassistant.components.conversation import AbstractConversationAgent, ConversationResult, ConversationEntity, \
     async_get_chat_log, AssistantContent
 from homeassistant.components.conversation.util import async_get_result_from_chat_log
+from homeassistant.components.conversation.chat_log import AssistantContentDeltaDict
 from homeassistant.components.ollama.entity import _format_tool
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -92,6 +95,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         url = configuration.get("url")
         timeout = configuration.get("timeout", 10)
         verify_ssl = configuration.get("verify_ssl", True)
+        use_streaming = configuration.get("streaming", False)
 
         # Prepare LLM data if available
         try:
@@ -111,7 +115,14 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                 for tool in chat_log.llm_api.tools
             ]
 
+        # Use streaming if enabled
+        if use_streaming:
+            return await self._async_handle_message_streaming(
+                user_input, chat_log, url, timeout, verify_ssl, tools
+            )
+
         response_text = None
+        api_continue_conversation = None  # Let API override continue_conversation
 
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
@@ -131,13 +142,14 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                     _LOGGER.info(f"LangChain requested {len(response_body['tool_calls'])} tool calls")
 
                     # Execute tools and get results
-                    response_text = await self._execute_tools_and_continue(
+                    response_text, api_continue_conversation = await self._execute_tools_and_continue(
                         session, url, timeout, response_body, chat_log, user_input.text, tools
                     )
 
                 elif response_body.get("type") == "response":
                     # Direct response without tools
                     response_text = response_body.get("response", "No response provided")
+                    api_continue_conversation = response_body.get("continue_conversation")
 
                 else:
                     _LOGGER.error("Unknown response type from LangChain service: %s", response_body)
@@ -159,7 +171,119 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         chat_log.async_add_assistant_content_without_tools(
             AssistantContent(agent_id=self.entity_id, content=response_text or "")
         )
-        return async_get_result_from_chat_log(user_input, chat_log)
+        result = async_get_result_from_chat_log(user_input, chat_log)
+
+        # Override continue_conversation if API specified it
+        if api_continue_conversation is not None:
+            result.continue_conversation = api_continue_conversation
+
+        return result
+
+    async def _async_handle_message_streaming(
+            self,
+            user_input: conversation.ConversationInput,
+            chat_log: conversation.ChatLog,
+            url: str,
+            timeout: int,
+            verify_ssl: bool,
+            tools: list
+    ) -> conversation.ConversationResult:
+        """Handle message with streaming support for preliminary responses."""
+        api_continue_conversation = None
+        tool_calls_pending = None
+
+        async def stream_from_langchain() -> AsyncGenerator[AssistantContentDeltaDict, None]:
+            """Stream deltas from LangChain SSE endpoint."""
+            nonlocal api_continue_conversation, tool_calls_pending
+
+            session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
+
+            try:
+                async with session.post(
+                    f"{url}/v1/completions/stream",
+                    json={"prompt": user_input.text, "tools": tools},
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.error(f"Streaming endpoint returned {response.status}")
+                        yield {"role": "assistant", "content": f"Error: Status {response.status}"}
+                        return
+
+                    # Start new assistant message
+                    yield {"role": "assistant"}
+
+                    async for line in response.content:
+                        line = line.decode('utf-8').strip()
+                        if not line or not line.startswith('data: '):
+                            continue
+
+                        data = line[6:]  # Remove 'data: ' prefix
+                        if data == '[DONE]':
+                            break
+
+                        try:
+                            event = json.loads(data)
+                            event_type = event.get('type')
+
+                            if event_type == 'preliminary':
+                                # Stream preliminary text
+                                content = event.get('content', '')
+                                _LOGGER.info(f"Streaming preliminary: {content}")
+                                yield {"content": content + " "}
+
+                            elif event_type == 'response':
+                                # Stream final response
+                                content = event.get('response', '')
+                                api_continue_conversation = event.get('continue_conversation')
+                                _LOGGER.info(f"Streaming response: {content[:50]}...")
+                                yield {"content": content}
+
+                            elif event_type == 'tool_call':
+                                # Tool calls need special handling - can't stream these
+                                tool_calls_pending = event
+                                _LOGGER.info(f"Received tool calls in stream")
+                                yield {"content": "Processing..."}
+
+                        except json.JSONDecodeError as e:
+                            _LOGGER.error(f"Failed to parse SSE event: {e}")
+                            continue
+
+            except aiohttp.ClientError as e:
+                _LOGGER.error(f"Streaming error: {e}")
+                yield {"role": "assistant", "content": f"Connection error: {e}"}
+
+        try:
+            # Stream content through chat_log
+            async for content in chat_log.async_add_delta_content_stream(
+                self.entity_id,
+                stream_from_langchain()
+            ):
+                _LOGGER.debug(f"Delta content processed: {type(content)}")
+
+            # Handle pending tool calls if any
+            if tool_calls_pending:
+                session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
+                response_text, api_continue_conversation = await self._execute_tools_and_continue(
+                    session, url, timeout, tool_calls_pending, chat_log, user_input.text, tools
+                )
+                # Add tool response to chat_log
+                chat_log.async_add_assistant_content_without_tools(
+                    AssistantContent(agent_id=self.entity_id, content=response_text or "")
+                )
+
+        except Exception as err:
+            _LOGGER.error(f"Error in streaming handler: {err}", exc_info=True)
+            chat_log.async_add_assistant_content_without_tools(
+                AssistantContent(agent_id=self.entity_id, content=f"Error: {err}")
+            )
+
+        result = async_get_result_from_chat_log(user_input, chat_log)
+
+        # Override continue_conversation if API specified it
+        if api_continue_conversation is not None:
+            result.continue_conversation = api_continue_conversation
+
+        return result
 
     async def _execute_tools_and_continue(
         self,
@@ -170,8 +294,12 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         chat_log: conversation.ChatLog,
         original_query: str,
         tools: list
-    ) -> str:
-        """Execute tools via Home Assistant and continue conversation with LangChain."""
+    ) -> tuple[str, bool | None]:
+        """Execute tools via Home Assistant and continue conversation with LangChain.
+
+        Returns:
+            tuple: (response_text, continue_conversation)
+        """
 
         tool_calls = tool_call_response.get("tool_calls", [])
         conversation_id = tool_call_response.get("conversation_id")
@@ -182,7 +310,7 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
 
         if not chat_log.llm_api:
             _LOGGER.error("No LLM API available for tool execution")
-            return "Error: No LLM API available for tool execution"
+            return "Error: No LLM API available for tool execution", None
 
         try:
             # Create assistant content with tool calls
@@ -243,18 +371,19 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
                 final_response = response_body.get("response")
                 if not final_response:
                     _LOGGER.warning(f"No 'response' field in response body: {response_body}")
-                    return "Tool execution completed but no response received"
+                    return "Tool execution completed but no response received", None
 
                 _LOGGER.info(f"Final response: {final_response}")
-                return final_response
+                continue_conversation = response_body.get("continue_conversation")
+                return final_response, continue_conversation
             else:
                 error_msg = f"Error getting final response: {response.status}"
                 _LOGGER.error(error_msg)
-                return error_msg
+                return error_msg, None
 
         except Exception as e:
             _LOGGER.error(f"Error executing tools: {e}", exc_info=True)
-            return f"Error executing tools: {str(e)}"
+            return f"Error executing tools: {str(e)}", None
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""

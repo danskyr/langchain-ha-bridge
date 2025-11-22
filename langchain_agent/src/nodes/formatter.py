@@ -20,6 +20,12 @@ def formatter_node(state: RouterState) -> Dict[str, Any]:
     if len(final_response) > 200:
         logger.info("[formatter] Response is long, consider summarizing")
 
+    # Determine if conversation should continue based on response content
+    # Continue if response ends with question mark (expecting user input)
+    continue_conversation = final_response.strip().endswith(("?", ";", "？"))
+    logger.info(f"[formatter] continue_conversation: {continue_conversation}")
+
     return {
-        "final_response": final_response
+        "final_response": final_response,
+        "continue_conversation": continue_conversation
     }

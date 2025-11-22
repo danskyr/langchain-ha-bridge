@@ -12,3 +12,4 @@ class RouterState(TypedDict):
     final_response: Optional[str]
     tools: Optional[List[Dict[str, Any]]]
     validation_attempts: int
+    continue_conversation: Optional[bool]

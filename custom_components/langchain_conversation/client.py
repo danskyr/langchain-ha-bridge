@@ -11,6 +11,59 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 _LOGGER = logging.getLogger(__name__)
 
 
+class WebSocketLogHandler(logging.Handler):
+    """Logging handler that forwards logs to LangChain server via WebSocket."""
+
+    def __init__(self, client: "LangChainClient"):
+        super().__init__()
+        self.client = client
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._task: Optional[asyncio.Task] = None
+
+    def emit(self, record: logging.LogRecord):
+        """Queue log record for async sending."""
+        if self.client.is_connected:
+            try:
+                # Don't forward logs from this module to avoid loops
+                if record.name.startswith("custom_components.langchain_conversation.client"):
+                    return
+                self._queue.put_nowait({
+                    "level": record.levelname,
+                    "message": self.format(record),
+                    "logger": record.name,
+                })
+            except asyncio.QueueFull:
+                pass  # Drop if queue is full
+
+    async def start(self):
+        """Start the background task that sends queued logs."""
+        self._task = asyncio.create_task(self._send_logs())
+
+    async def stop(self):
+        """Stop the background task."""
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _send_logs(self):
+        """Send queued logs to server."""
+        while True:
+            try:
+                log_entry = await self._queue.get()
+                if self.client.is_connected:
+                    await self.client.send_log(
+                        log_entry["level"],
+                        f"[{log_entry['logger']}] {log_entry['message']}"
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass  # Best effort
+
+
 class LangChainClient:
     """WebSocket client for LangChain server communication."""
 

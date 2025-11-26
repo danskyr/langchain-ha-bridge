@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
@@ -12,7 +11,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
-from .client import LangChainClient
+from .client import LangChainClient, WebSocketLogHandler
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = (Platform.CONVERSATION,)
@@ -45,44 +44,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Error connecting to LangChain server: %s", err)
         raise ConfigEntryNotReady(f"Connection error: {err}") from err
 
-    # Background listener task to detect disconnects
-    async def _listen_for_disconnect():
-        """Monitor WebSocket connection and trigger reload on disconnect."""
-        try:
-            if client._ws is None:
-                return
+    # Set up log forwarding to server
+    log_handler = WebSocketLogHandler(client)
+    log_handler.setFormatter(logging.Formatter('%(message)s'))
+    log_handler.setLevel(logging.DEBUG)
 
-            async for msg in client._ws:
-                if msg.type == aiohttp.WSMsgType.CLOSED:
-                    _LOGGER.warning("WebSocket connection closed by server")
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    _LOGGER.error("WebSocket error: %s", client._ws.exception())
-                    break
-                # Other message types are handled by send_conversation
-        except Exception as e:
-            _LOGGER.warning("WebSocket listener error: %s", e)
-        finally:
-            if not hass.is_stopping:
-                _LOGGER.info("WebSocket disconnected, scheduling reload")
-                hass.async_create_task(
-                    hass.config_entries.async_reload(entry.entry_id)
-                )
+    # Add handler to component logger (and all child loggers)
+    # __name__ is the component path, e.g., custom_components.langchain_conversation
+    component_logger = logging.getLogger(__name__)
+    component_logger.addHandler(log_handler)
 
-    listen_task = entry.async_create_background_task(
-        hass, _listen_for_disconnect(), "langchain_ws_listen"
-    )
+    # Start the log forwarding task
+    await log_handler.start()
+    _LOGGER.info("Log forwarding to LangChain server enabled")
 
     # Cleanup on HA shutdown
     async def _shutdown(event):
+        await log_handler.stop()
         await client.disconnect()
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _shutdown)
     )
 
-    # Ensure client disconnects on unload
+    # Ensure cleanup on unload
     async def _cleanup():
+        component_logger.removeHandler(log_handler)
+        await log_handler.stop()
         await client.disconnect()
 
     entry.async_on_unload(_cleanup)
@@ -90,7 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store client and config data
     hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
-        "listen_task": listen_task,
+        "log_handler": log_handler,
         **entry.data
     }
 

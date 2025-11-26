@@ -8,6 +8,7 @@ from homeassistant.components import conversation as conversation
 from homeassistant.components.conversation import (
     AbstractConversationAgent,
     ConversationEntity,
+    ConversationResult,
     async_get_chat_log,
     AssistantContent,
 )

@@ -83,6 +83,7 @@ class LangChainClient:
         self._reconnect_start: Optional[float] = None
         self._reconnect_delay = RECONNECT_INITIAL_DELAY
         self._reconnect_logged_warning = False
+        self._receive_lock = asyncio.Lock()  # Prevent concurrent receive operations
 
     @property
     def is_connected(self) -> bool:
@@ -182,40 +183,42 @@ class LangChainClient:
         Returns:
             Response dict with type, content, and optionally tool_calls
         """
-        # Try to ensure we're connected (with reconnection if needed)
-        if not await self.ensure_connected():
-            raise ConnectionError("WebSocket not connected and reconnection failed")
+        # Use lock to prevent concurrent receive operations
+        async with self._receive_lock:
+            # Try to ensure we're connected (with reconnection if needed)
+            if not await self.ensure_connected():
+                raise ConnectionError("WebSocket not connected and reconnection failed")
 
-        try:
-            await self._ws.send_json({
-                "type": "conversation",
-                "conversation_id": conversation_id,
-                "messages": messages,
-                "tools": tools
-            })
+            try:
+                await self._ws.send_json({
+                    "type": "conversation",
+                    "conversation_id": conversation_id,
+                    "messages": messages,
+                    "tools": tools
+                })
 
-            # Wait for response matching our conversation_id
-            async for msg in self._ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    # Only return if this response is for our conversation
-                    if data.get("conversation_id") == conversation_id:
-                        return data
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    self._connected = False
-                    _LOGGER.debug("WebSocket closed while waiting for response")
-                    raise ConnectionError("WebSocket closed unexpectedly")
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self._connected = False
-                    _LOGGER.debug("WebSocket error: %s", self._ws.exception())
-                    raise ConnectionError(f"WebSocket error: {self._ws.exception()}")
+                # Wait for response matching our conversation_id
+                async for msg in self._ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        # Only return if this response is for our conversation
+                        if data.get("conversation_id") == conversation_id:
+                            return data
+                    elif msg.type == aiohttp.WSMsgType.CLOSED:
+                        self._connected = False
+                        _LOGGER.debug("WebSocket closed while waiting for response")
+                        raise ConnectionError("WebSocket closed unexpectedly")
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        self._connected = False
+                        _LOGGER.debug("WebSocket error: %s", self._ws.exception())
+                        raise ConnectionError(f"WebSocket error: {self._ws.exception()}")
 
-            raise ConnectionError("No response received")
+                raise ConnectionError("No response received")
 
-        except (aiohttp.ClientError, ConnectionError):
-            # Mark as disconnected so next call triggers reconnection
-            self._connected = False
-            raise
+            except (aiohttp.ClientError, ConnectionError):
+                # Mark as disconnected so next call triggers reconnection
+                self._connected = False
+                raise
 
     async def send_log(self, level: str, message: str):
         """Forward log entry to server (best effort)."""
@@ -231,18 +234,19 @@ class LangChainClient:
 
     async def ping(self) -> bool:
         """Send ping and wait for pong to verify connection."""
-        if not self.is_connected:
-            return False
+        async with self._receive_lock:
+            if not self.is_connected:
+                return False
 
-        try:
-            await self._ws.send_json({"type": "ping"})
-            async for msg in self._ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    if data.get("type") == "pong":
-                        return True
-                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                    return False
-        except Exception:
+            try:
+                await self._ws.send_json({"type": "ping"})
+                async for msg in self._ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "pong":
+                            return True
+                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        return False
+            except Exception:
+                return False
             return False
-        return False

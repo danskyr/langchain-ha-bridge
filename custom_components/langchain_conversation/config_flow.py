@@ -1,12 +1,13 @@
-import voluptuous as vol
-import aiohttp
 import asyncio
-from homeassistant import config_entries
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.core import callback
-from .const import DOMAIN
 import logging
 
+import aiohttp
+import voluptuous as vol
+from homeassistant import config_entries
+from homeassistant.core import callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .const import DOMAIN
 from .utils import get_host_from_url
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,39 +97,32 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return {"valid": True, "error": None}
 
     async def _test_connection(self, config):
-        """Test connection to the LangChain service."""
+        """Test WebSocket connection to the LangChain service."""
         url = config.get("url")
         timeout = config.get("timeout", 10)
         verify_ssl = config.get("verify_ssl", False)
 
+        # Convert HTTP URL to WebSocket URL
+        ws_url = url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
 
-            # Test with a simple health check or ping
-            test_payload = {
-                "message": "Connection test",
-                "test": True
-            }
-
             async with asyncio.timeout(timeout):
-                async with session.post(
-                        url + "/test",
-                        json=test_payload,
-                        timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as response:
-                    if response.status == 200:
-                        try:
-                            await response.json()
-                            return {"valid": True, "error": None}
-                        except Exception:
-                            return {"valid": False, "error": f"received 200, but failed to parse response as json: {await response.text()}"}
-                    else:
-                        return {"valid": False, "error": f"connection_error_status_{response.status}"}
+                async with session.ws_connect(ws_url) as ws:
+                    # Send ping and wait for pong
+                    await ws.send_json({"type": "ping"})
+                    msg = await ws.receive_json()
+                    if msg.get("type") == "pong":
+                        return {"valid": True, "error": None}
+                    return {"valid": False, "error": "unexpected_response"}
 
         except asyncio.TimeoutError:
             return {"valid": False, "error": "connection_timeout"}
         except aiohttp.ClientConnectorError:
             return {"valid": False, "error": "connection_refused"}
+        except aiohttp.WSServerHandshakeError:
+            return {"valid": False, "error": "websocket_handshake_failed"}
         except aiohttp.ClientSSLError:
             return {"valid": False, "error": "ssl_error"}
         except Exception as err:

@@ -43,7 +43,8 @@ def route_to_handlers(state: RouterState) -> Sequence[str]:
     handlers = []
     if "iot" in route_types:
         handlers.append("iot_handler")
-    if "general" in route_types or not handlers:
+    # Search routes go to general handler (which has Tavily access)
+    if "general" in route_types or "search" in route_types or not handlers:
         handlers.append("general_handler")
 
     logger.info(f"[route_to_handlers] Will execute: {handlers}")

@@ -22,6 +22,7 @@ from .nodes import (
     create_validation_node,
     validation_decision,
     formatter_node,
+    announcement_node,
 )
 
 logging.basicConfig(
@@ -87,6 +88,7 @@ class LangChainRouterAgentV2:
         validation_node = create_validation_node(self)
 
         workflow.add_node("router", router_node)
+        workflow.add_node("announcement", announcement_node)
         workflow.add_node("iot_handler", iot_handler_node)
         workflow.add_node("general_handler", general_handler_node)
         workflow.add_node("aggregator", aggregator_node)
@@ -99,14 +101,22 @@ class LangChainRouterAgentV2:
 
         workflow.add_edge(START, "router")
 
+        # After router, branch to both announcement and handlers
         workflow.add_conditional_edges(
             "router",
             route_to_handlers,
             ["iot_handler", "general_handler"]
         )
 
+        # Also run announcement in parallel (non-blocking)
+        workflow.add_edge("router", "announcement")
+
+        # Handlers go to aggregator
         workflow.add_edge("iot_handler", "aggregator")
         workflow.add_edge("general_handler", "aggregator")
+
+        # Announcement also goes to aggregator (to ensure it completes before agent)
+        workflow.add_edge("announcement", "aggregator")
 
         workflow.add_edge("aggregator", "agent")
 
@@ -184,7 +194,9 @@ class LangChainRouterAgentV2:
                 "handler_responses": [],
                 "final_response": None,
                 "tools": tools,
-                "validation_attempts": 1
+                "validation_attempts": 1,
+                "preliminary_messages": [],
+                "streaming_events": []
             }
 
             result = await self.graph.ainvoke(initial_state, config)

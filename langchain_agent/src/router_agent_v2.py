@@ -144,19 +144,23 @@ class LangChainRouterAgentV2:
 
     async def process(
         self,
-        query: str,
+        messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        conversation_id: Optional[str] = None,
-        tool_results: Optional[List[Dict[str, Any]]] = None
+        conversation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Process a query with the graph, handling both initial and continuation calls.
+        Process messages from HA with the graph.
+
+        The messages array contains the full chat history including:
+        - {"role": "system", "content": "..."}
+        - {"role": "user", "content": "..."}
+        - {"role": "assistant", "content": "...", "tool_calls": [...]}
+        - {"role": "tool_result", "tool_call_id": "...", "tool_name": "...", "tool_result": {...}}
 
         Args:
-            query: The user's query
+            messages: Full message history from HA
             tools: Available tools from Home Assistant
             conversation_id: Thread ID for resuming conversation
-            tool_results: Results from previously requested tool calls
 
         Returns:
             Dict with either tool_calls or final response
@@ -164,19 +168,36 @@ class LangChainRouterAgentV2:
         thread_id = conversation_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
-        self.logger.info(f"[process] Thread: {thread_id[:8]}... | Tool results: {bool(tool_results)}")
+        self.logger.info(f"[process] Thread: {thread_id[:8]}... | Messages: {len(messages)}")
 
-        if tool_results:
+        # Extract query from last user message
+        query = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                query = msg.get("content", "")
+                break
+
+        # Check if we have tool results (continuation)
+        if messages and messages[-1].get("role") == "tool_result":
+            # Extract tool results from messages
+            tool_results = [
+                {
+                    "tool_call_id": m.get("tool_call_id"),
+                    "tool_name": m.get("tool_name"),
+                    "result": m.get("tool_result")
+                }
+                for m in messages if m.get("role") == "tool_result"
+            ]
             self.logger.info(f"[process] Resuming with {len(tool_results)} tool results")
 
-            tool_messages = []
-            for result in tool_results:
-                tool_messages.append(
-                    ToolMessage(
-                        content=str(result.get("result", "")),
-                        tool_call_id=result.get("tool_call_id", "")
-                    )
+            # Convert to LangGraph ToolMessages and invoke
+            tool_messages = [
+                ToolMessage(
+                    content=str(tr.get("result", "")),
+                    tool_call_id=tr.get("tool_call_id", "")
                 )
+                for tr in tool_results
+            ]
 
             state_update = {
                 "messages": tool_messages,
@@ -185,7 +206,7 @@ class LangChainRouterAgentV2:
 
             result = await self.graph.ainvoke(state_update, config)
         else:
-            self.logger.info(f"[process] Starting new conversation")
+            self.logger.info(f"[process] Starting new/continuing conversation")
 
             initial_state = {
                 "messages": [HumanMessage(content=query)],
@@ -201,9 +222,9 @@ class LangChainRouterAgentV2:
 
             result = await self.graph.ainvoke(initial_state, config)
 
-        messages = result.get("messages", [])
-        if messages:
-            last_message = messages[-1]
+        result_messages = result.get("messages", [])
+        if result_messages:
+            last_message = result_messages[-1]
 
             if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                 self.logger.info(f"[process] Returning {len(last_message.tool_calls)} tool calls")
@@ -247,7 +268,7 @@ if __name__ == "__main__":
     import asyncio
 
     agent = LangChainRouterAgentV2()
-    print("Welcome to the LangChain Router Agent V2! 👋")
+    print("Welcome to the LangChain Router Agent V2!")
     print("Type your query, or 'exit' to quit.")
 
     async def run_cli():
@@ -257,12 +278,14 @@ if __name__ == "__main__":
                 if not input_query.strip():
                     continue
                 if input_query.strip().lower() in ("exit", "quit"):
-                    print("Goodbye! 👋")
+                    print("Goodbye!")
                     break
 
-                response = await agent.process(input_query)
+                # Use new messages-based interface
+                messages = [{"role": "user", "content": input_query}]
+                response = await agent.process(messages=messages)
                 print(f"Agent: {response}\n")
         except (KeyboardInterrupt, EOFError):
-            print("\nGoodbye! 👋")
+            print("\nGoodbye!")
 
     asyncio.run(run_cli())

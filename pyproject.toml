@@ -23,6 +23,7 @@ dotenv = "0.9.9"
 langchain-tavily = "^0.2.7"
 langgraph = "^0.5.4"
 jsonschema = "^4.25.1"
+websockets = "^15.0.1"
 
 [tool.poetry.scripts]
 langchain-ha-bridge = "langchain_agent.src.__main__:main"

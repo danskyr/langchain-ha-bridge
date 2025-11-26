@@ -96,9 +96,9 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         client: LangChainClient = config.get("client")
         timeout = config.get("timeout", 90)
 
-        if not client or not client.is_connected:
+        if not client:
             chat_log.async_add_assistant_content_without_tools(
-                AssistantContent(agent_id=self.entity_id, content="LangChain server unavailable")
+                AssistantContent(agent_id=self.entity_id, content="LangChain client not configured")
             )
             return async_get_result_from_chat_log(user_input, chat_log)
 
@@ -152,7 +152,8 @@ class RemoteConversationAgent(AbstractConversationAgent, ConversationEntity):
         except TimeoutError:
             response_text = "Request timed out"
         except ConnectionError as e:
-            response_text = f"Connection error: {e}"
+            _LOGGER.warning("Connection error: %s", e)
+            response_text = "LangChain server unavailable - please try again"
         except Exception as e:
             _LOGGER.error("Error in message handling: %s", e, exc_info=True)
             response_text = "An error occurred"

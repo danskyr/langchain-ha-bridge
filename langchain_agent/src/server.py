@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import StreamingResponse
+
+from langchain_agent.src.websocket_handler import WebSocketHandler
 # from langchain.chains.router import RouterChain
 from langchain.chains import LLMChain
 from pydantic import BaseModel
@@ -176,6 +178,14 @@ class OpenAICompatibleResponse(BaseModel):
 # }
 
 router_agent = LangChainRouterAgentV2()
+ws_handler = WebSocketHandler(router_agent)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time bidirectional communication with HA."""
+    await ws_handler.handle_connection(websocket)
+
 
 class ToolCall(BaseModel):
     id: str
@@ -210,12 +220,23 @@ async def process(req: OpenAITextCompletionRequest):
             result_preview = str(result.get('result', ''))[:100]
             conversation_logger.info(f"  {i}. {tool_name}: {result_preview}{'...' if len(str(result.get('result', ''))) > 100 else ''}")
 
-    # Use unified process method that handles both initial and continuation calls
+    # Build messages array from request (for backwards compatibility with HTTP endpoint)
+    messages = [{"role": "user", "content": req.prompt}]
+    if req.tool_results:
+        # Add tool results to messages
+        for tr in req.tool_results:
+            messages.append({
+                "role": "tool_result",
+                "tool_call_id": tr.get("tool_call_id"),
+                "tool_name": tr.get("tool_name"),
+                "tool_result": tr.get("result")
+            })
+
+    # Use unified process method with messages-based interface
     result = await router_agent.process(
-        query=req.prompt,
+        messages=messages,
         tools=req.tools,
-        conversation_id=req.conversation_id,
-        tool_results=req.tool_results
+        conversation_id=req.conversation_id
     )
 
     # Return appropriate response based on result type
@@ -378,12 +399,22 @@ async def process_stream(req: OpenAITextCompletionRequest):
                                 logger.info(f"Streaming event: {evt}")
                                 yield f"data: {json.dumps(evt)}\n\n"
 
+            # Build messages array for final result
+            messages = [{"role": "user", "content": req.prompt}]
+            if req.tool_results:
+                for tr in req.tool_results:
+                    messages.append({
+                        "role": "tool_result",
+                        "tool_call_id": tr.get("tool_call_id"),
+                        "tool_name": tr.get("tool_name"),
+                        "tool_result": tr.get("result")
+                    })
+
             # Get the final result
             result = await router_agent.process(
-                query=req.prompt,
+                messages=messages,
                 tools=req.tools,
-                conversation_id=conv_id,
-                tool_results=req.tool_results
+                conversation_id=conv_id
             )
 
             # Yield the final result

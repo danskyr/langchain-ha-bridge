@@ -12,6 +12,8 @@ poetry run langchain-ha-bridge
 ./scripts/run_server.sh
 ```
 
+**Note:** The server uses hot reload (uvicorn with `--reload`). When modifying server-side code, do NOT restart the server - it will automatically detect changes and reload. Check `logs/langchain_agent.log` to verify reload happened. The HA custom component requires reloading the integration in HA to pick up changes.
+
 ### Managing Dependencies
 ```bash
 # Install dependencies

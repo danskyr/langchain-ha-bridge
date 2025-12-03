@@ -83,18 +83,24 @@ class LangChainClient:
         self._reconnect_start: Optional[float] = None
         self._reconnect_delay = RECONNECT_INITIAL_DELAY
         self._reconnect_logged_warning = False
-        self._receive_lock = asyncio.Lock()  # Prevent concurrent receive operations
+
+        # Dedicated reader task pattern
+        self._reader_task: Optional[asyncio.Task] = None
+        self._response_queues: Dict[str, asyncio.Queue[Dict[str, Any]]] = {}
+        self._queues_lock = asyncio.Lock()
+        self._pending_ping: Optional[asyncio.Future[bool]] = None
 
     @property
     def is_connected(self) -> bool:
         return self._connected and self._ws is not None and not self._ws.closed
 
     async def connect(self) -> bool:
-        """Establish WebSocket connection."""
+        """Establish WebSocket connection and start reader task."""
         try:
             session = async_get_clientsession(self.hass, verify_ssl=self._verify_ssl)
             self._ws = await session.ws_connect(self._url, heartbeat=30)
             self._connected = True
+            await self._start_reader_task()
             # Reset reconnection state on successful connect
             self._reconnect_start = None
             self._reconnect_delay = RECONNECT_INITIAL_DELAY
@@ -160,10 +166,82 @@ class LangChainClient:
     async def disconnect(self):
         """Close WebSocket connection."""
         self._connected = False
+        await self._stop_reader_task()
+        async with self._queues_lock:
+            self._response_queues.clear()
         if self._ws:
             await self._ws.close()
             self._ws = None
             _LOGGER.info("WebSocket disconnected from LangChain server")
+
+    async def _start_reader_task(self) -> None:
+        """Start the background reader task."""
+        if self._reader_task is None or self._reader_task.done():
+            self._reader_task = asyncio.create_task(self._reader_loop())
+
+    async def _stop_reader_task(self) -> None:
+        """Stop the background reader task."""
+        if self._reader_task and not self._reader_task.done():
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+            self._reader_task = None
+
+    async def _reader_loop(self) -> None:
+        """Background task that reads all WebSocket messages and routes them."""
+        try:
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        await self._route_message(data)
+                    except json.JSONDecodeError:
+                        pass
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    break
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            self._connected = False
+            await self._notify_all_waiters_of_disconnect()
+
+    async def _route_message(self, data: Dict[str, Any]) -> None:
+        """Route incoming message to appropriate handler."""
+        msg_type = data.get("type")
+
+        if msg_type == "pong":
+            if self._pending_ping and not self._pending_ping.done():
+                self._pending_ping.set_result(True)
+        elif msg_type in ("response", "tool_call", "error"):
+            conv_id = data.get("conversation_id")
+            if conv_id:
+                async with self._queues_lock:
+                    queue = self._response_queues.get(conv_id)
+                    if queue:
+                        await queue.put(data)
+
+    async def _notify_all_waiters_of_disconnect(self) -> None:
+        """Notify all waiting operations that connection was lost."""
+        if self._pending_ping and not self._pending_ping.done():
+            self._pending_ping.set_exception(ConnectionError("WebSocket disconnected"))
+
+        async with self._queues_lock:
+            disconnect_msg: Dict[str, Any] = {
+                "type": "error",
+                "code": "connection_lost",
+                "message": "WebSocket connection lost"
+            }
+            for queue in self._response_queues.values():
+                try:
+                    await queue.put(disconnect_msg)
+                except Exception:
+                    pass
 
     async def send_conversation(
         self,
@@ -171,9 +249,10 @@ class LangChainClient:
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Send conversation and wait for response.
+        """Send conversation and wait for response via queue.
 
-        Automatically attempts reconnection with backoff if disconnected.
+        This method is concurrency-safe - multiple conversations can be
+        in flight simultaneously, each waiting on their own queue.
 
         Args:
             conversation_id: Unique identifier for the conversation
@@ -183,42 +262,35 @@ class LangChainClient:
         Returns:
             Response dict with type, content, and optionally tool_calls
         """
-        # Use lock to prevent concurrent receive operations
-        async with self._receive_lock:
-            # Try to ensure we're connected (with reconnection if needed)
-            if not await self.ensure_connected():
-                raise ConnectionError("WebSocket not connected and reconnection failed")
+        if not await self.ensure_connected():
+            raise ConnectionError("WebSocket not connected and reconnection failed")
 
-            try:
-                await self._ws.send_json({
-                    "type": "conversation",
-                    "conversation_id": conversation_id,
-                    "messages": messages,
-                    "tools": tools
-                })
+        response_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=1)
 
-                # Wait for response matching our conversation_id
-                async for msg in self._ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        data = json.loads(msg.data)
-                        # Only return if this response is for our conversation
-                        if data.get("conversation_id") == conversation_id:
-                            return data
-                    elif msg.type == aiohttp.WSMsgType.CLOSED:
-                        self._connected = False
-                        _LOGGER.debug("WebSocket closed while waiting for response")
-                        raise ConnectionError("WebSocket closed unexpectedly")
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        self._connected = False
-                        _LOGGER.debug("WebSocket error: %s", self._ws.exception())
-                        raise ConnectionError(f"WebSocket error: {self._ws.exception()}")
+        async with self._queues_lock:
+            self._response_queues[conversation_id] = response_queue
 
-                raise ConnectionError("No response received")
+        try:
+            await self._ws.send_json({
+                "type": "conversation",
+                "conversation_id": conversation_id,
+                "messages": messages,
+                "tools": tools
+            })
 
-            except (aiohttp.ClientError, ConnectionError):
-                # Mark as disconnected so next call triggers reconnection
-                self._connected = False
-                raise
+            response = await response_queue.get()
+
+            if response.get("code") == "connection_lost":
+                raise ConnectionError("WebSocket connection lost while waiting for response")
+
+            return response
+
+        except (aiohttp.ClientError, ConnectionError):
+            self._connected = False
+            raise
+        finally:
+            async with self._queues_lock:
+                self._response_queues.pop(conversation_id, None)
 
     async def send_log(self, level: str, message: str):
         """Forward log entry to server (best effort)."""
@@ -233,20 +305,20 @@ class LangChainClient:
                 pass  # Best effort - don't fail if log forwarding fails
 
     async def ping(self) -> bool:
-        """Send ping and wait for pong to verify connection."""
-        async with self._receive_lock:
-            if not self.is_connected:
-                return False
-
-            try:
-                await self._ws.send_json({"type": "ping"})
-                async for msg in self._ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        data = json.loads(msg.data)
-                        if data.get("type") == "pong":
-                            return True
-                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        return False
-            except Exception:
-                return False
+        """Send ping and wait for pong via Future."""
+        if not self.is_connected:
             return False
+
+        loop = asyncio.get_running_loop()
+        self._pending_ping = loop.create_future()
+
+        try:
+            await self._ws.send_json({"type": "ping"})
+            async with asyncio.timeout(10):
+                return await self._pending_ping
+        except (TimeoutError, asyncio.TimeoutError):
+            return False
+        except Exception:
+            return False
+        finally:
+            self._pending_ping = None

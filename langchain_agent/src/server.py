@@ -91,6 +91,10 @@ def setup_file_logging():
     conversation_logger.addHandler(conversation_file_handler)
     conversation_logger.propagate = False  # Don't propagate to root
 
+    # Configure home_assistant logger for forwarded HA logs
+    ha_logger = logging.getLogger('home_assistant')
+    ha_logger.setLevel(logging.INFO)
+
     # 4. Console handler for development
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)

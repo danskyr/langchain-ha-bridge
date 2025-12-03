@@ -179,22 +179,28 @@ class LangChainRouterAgentV2:
 
         # Check if we have tool results (continuation)
         if messages and messages[-1].get("role") == "tool_result":
-            # Extract tool results from messages
-            tool_results = [
-                {
-                    "tool_call_id": m.get("tool_call_id"),
-                    "tool_name": m.get("tool_name"),
-                    "result": m.get("tool_result")
-                }
-                for m in messages if m.get("role") == "tool_result"
-            ]
+            # Extract ONLY the latest batch of consecutive tool results from the end
+            # (not all tool_results from entire conversation history)
+            tool_results = []
+            for m in reversed(messages):
+                if m.get("role") == "tool_result":
+                    tool_results.insert(0, {
+                        "tool_call_id": m.get("tool_call_id"),
+                        "tool_name": m.get("tool_name"),
+                        "result": m.get("tool_result")
+                    })
+                else:
+                    break
             self.logger.info(f"[process] Resuming with {len(tool_results)} tool results")
+            for tr in tool_results:
+                self.logger.info(f"[process]   - {tr.get('tool_name', 'unknown')}: {str(tr.get('result', ''))[:100]}")
 
             # Convert to LangGraph ToolMessages and invoke
             tool_messages = [
                 ToolMessage(
                     content=str(tr.get("result", "")),
-                    tool_call_id=tr.get("tool_call_id", "")
+                    tool_call_id=tr.get("tool_call_id", ""),
+                    name=tr.get("tool_name", "unknown")
                 )
                 for tr in tool_results
             ]

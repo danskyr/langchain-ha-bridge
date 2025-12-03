@@ -53,10 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # __name__ is the component path, e.g., custom_components.langchain_conversation
     component_logger = logging.getLogger(__name__)
     component_logger.addHandler(log_handler)
+    _LOGGER.info("Added log handler to logger: %s (effective level: %s)",
+                 component_logger.name, logging.getLevelName(component_logger.getEffectiveLevel()))
 
     # Start the log forwarding task
     await log_handler.start()
-    _LOGGER.info("Log forwarding to LangChain server enabled")
+    _LOGGER.info("Log forwarding to LangChain server enabled - this message should be forwarded")
 
     # Cleanup on HA shutdown
     async def _shutdown(event):

@@ -34,24 +34,31 @@ class WebSocketLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         """Queue log record for async sending (thread-safe)."""
+        # Always log that emit was called (won't loop since this is from client module)
+        # But use print to avoid any logging system issues
+        print(f"[LOG_HANDLER] emit called: connected={self.client.is_connected}, logger={record.name}")
+
         if self.client.is_connected:
             try:
                 # Don't forward logs from this module to avoid loops
                 if record.name.startswith("custom_components.langchain_conversation.client"):
+                    print(f"[LOG_HANDLER] Skipping client module log")
                     return
                 self._queue.put_nowait({
                     "level": record.levelname,
                     "message": self.format(record),
                     "logger": record.name,
                 })
+                print(f"[LOG_HANDLER] Queued log, queue size: {self._queue.qsize()}")
             except queue.Full:
-                pass  # Drop if queue is full
-            except Exception:
-                pass  # Best effort - don't break logging
+                print(f"[LOG_HANDLER] Queue full, dropping log")
+            except Exception as e:
+                print(f"[LOG_HANDLER] Error queuing log: {e}")
 
     async def start(self):
         """Start the background task that sends queued logs."""
         self._task = asyncio.create_task(self._send_logs())
+        _LOGGER.info("Started log forwarding background task")
 
     async def stop(self):
         """Stop the background task."""
@@ -64,11 +71,14 @@ class WebSocketLogHandler(logging.Handler):
 
     async def _send_logs(self):
         """Send queued logs to server."""
+        _LOGGER.info("Log forwarding background task started, queue size: %d", self._queue.qsize())
         while True:
             try:
                 # Use non-blocking get with small sleep to allow cancellation
                 try:
                     log_entry = self._queue.get_nowait()
+                    _LOGGER.info("Sending log to server: %s (connected: %s)",
+                                 log_entry["message"][:30], self.client.is_connected)
                     if self.client.is_connected:
                         await self.client.send_log(
                             log_entry["level"],
@@ -77,9 +87,10 @@ class WebSocketLogHandler(logging.Handler):
                 except queue.Empty:
                     await asyncio.sleep(0.1)
             except asyncio.CancelledError:
+                _LOGGER.info("Log forwarding background task cancelled")
                 break
-            except Exception:
-                pass  # Best effort
+            except Exception as e:
+                _LOGGER.info("Log forwarding error: %s", e)
 
 
 class LangChainClient:

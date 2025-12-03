@@ -4,7 +4,7 @@ import uuid
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -37,6 +37,40 @@ if not dotenv_result:
 module_logger = logging.getLogger('langchain_agent')
 log_level = os.getenv('LANGCHAIN_LOG_LEVEL', 'INFO')
 module_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
+MAX_HISTORY_MESSAGES = 10
+
+
+def convert_ha_messages_to_langchain(messages: List[Dict[str, Any]]) -> List[BaseMessage]:
+    """Convert Home Assistant message format to LangChain BaseMessage types.
+
+    Args:
+        messages: List of HA messages with 'role' and 'content' keys
+
+    Returns:
+        List of LangChain BaseMessage objects
+    """
+    result: List[BaseMessage] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "user":
+            result.append(HumanMessage(content=content))
+        elif role == "assistant":
+            result.append(AIMessage(content=content))
+        elif role == "system":
+            result.append(SystemMessage(content=content))
+        elif role == "tool_result":
+            tool_result_content = msg.get("tool_result", content)
+            result.append(ToolMessage(
+                content=str(tool_result_content),
+                tool_call_id=msg.get("tool_call_id", ""),
+                name=msg.get("tool_name", "unknown")
+            ))
+
+    return result
 
 
 class LangChainRouterAgentV2:
@@ -214,8 +248,23 @@ class LangChainRouterAgentV2:
         else:
             self.logger.info(f"[process] Starting new/continuing conversation")
 
+            # Build conversation history from previous messages (excluding current query)
+            # Find index of last user message (current query) and take history before it
+            history_messages: List[Dict[str, Any]] = []
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    history_messages = messages[:i]
+                    break
+
+            # Convert to LangChain format and limit to last N messages
+            conversation_history = convert_ha_messages_to_langchain(history_messages)
+            if len(conversation_history) > MAX_HISTORY_MESSAGES:
+                conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
+
+            self.logger.info(f"[process] Including {len(conversation_history)} history messages for context")
+
             initial_state = {
-                "messages": [HumanMessage(content=query)],
+                "messages": conversation_history + [HumanMessage(content=query)],
                 "query": query,
                 "route_types": [],
                 "handler_responses": [],

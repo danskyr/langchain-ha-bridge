@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import queue
 import time
 from typing import Optional, Dict, Any, List
 
@@ -19,16 +20,20 @@ RECONNECT_BACKOFF_FACTOR = 2  # Double each time
 
 
 class WebSocketLogHandler(logging.Handler):
-    """Logging handler that forwards logs to LangChain server via WebSocket."""
+    """Logging handler that forwards logs to LangChain server via WebSocket.
+
+    Uses a thread-safe queue since emit() is called synchronously from logging
+    which may happen from different threads.
+    """
 
     def __init__(self, client: "LangChainClient"):
         super().__init__()
         self.client = client
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue: queue.Queue[Dict[str, str]] = queue.Queue(maxsize=100)
         self._task: Optional[asyncio.Task] = None
 
     def emit(self, record: logging.LogRecord):
-        """Queue log record for async sending."""
+        """Queue log record for async sending (thread-safe)."""
         if self.client.is_connected:
             try:
                 # Don't forward logs from this module to avoid loops
@@ -39,8 +44,10 @@ class WebSocketLogHandler(logging.Handler):
                     "message": self.format(record),
                     "logger": record.name,
                 })
-            except asyncio.QueueFull:
+            except queue.Full:
                 pass  # Drop if queue is full
+            except Exception:
+                pass  # Best effort - don't break logging
 
     async def start(self):
         """Start the background task that sends queued logs."""
@@ -59,12 +66,16 @@ class WebSocketLogHandler(logging.Handler):
         """Send queued logs to server."""
         while True:
             try:
-                log_entry = await self._queue.get()
-                if self.client.is_connected:
-                    await self.client.send_log(
-                        log_entry["level"],
-                        f"[{log_entry['logger']}] {log_entry['message']}"
-                    )
+                # Use non-blocking get with small sleep to allow cancellation
+                try:
+                    log_entry = self._queue.get_nowait()
+                    if self.client.is_connected:
+                        await self.client.send_log(
+                            log_entry["level"],
+                            f"[{log_entry['logger']}] {log_entry['message']}"
+                        )
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
             except Exception:

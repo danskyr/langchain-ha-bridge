@@ -98,4 +98,5 @@ class WebSocketHandler:
         level = data.get("level", "INFO").upper()
         message = data.get("message", "")
         log_level = getattr(logging, level, logging.INFO)
+        logger.info(f"Received HA log: {level} - {message[:50]}...")
         logging.getLogger("home_assistant").log(log_level, f"[HA] {message}")

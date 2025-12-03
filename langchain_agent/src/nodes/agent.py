@@ -151,6 +151,11 @@ Examples of CORRECT responses:
             }
 
         logger.info("[agent] No pending tool results, checking if tools needed for new query")
+        logger.info(f"[agent] Messages in state: {len(messages)}")
+        for i, msg in enumerate(messages):
+            msg_type = type(msg).__name__
+            content_preview = str(msg.content)[:80].replace('\n', ' ') if msg.content else "(empty)"
+            logger.info(f"[agent]   {i+1}. {msg_type}: {content_preview}")
 
         all_tools = list(ha_tools) + agent_instance.local_tools
         has_tools = len(all_tools) > 0
@@ -160,7 +165,18 @@ Examples of CORRECT responses:
 
             system_prompt = SystemMessage(content="""You are a smart home assistant with access to various tools and functions.
 
-IMPORTANT: When the user asks you to perform an action or needs current information, you MUST call the appropriate tool. Do not just describe what you would do - actually call the tool.
+## Conversation Context
+You have access to the conversation history. Use it to:
+- Understand pronouns like "them", "it", "those" (e.g., "dim them" refers to lights mentioned earlier)
+- Answer questions about previous requests (e.g., "what was my last request?" - just look at the history)
+- Maintain continuity (e.g., if user said "office lights", then "dim them to 50%" means office lights)
+
+DO NOT call tools for questions about conversation history - just answer from the messages you can see.
+
+## When to Use Tools
+Call tools ONLY when you need to:
+- Perform an ACTION (turn on/off, set brightness, add to list, etc.)
+- Get CURRENT device state that's not in the conversation
 
 ## Understanding Context
 
@@ -178,6 +194,13 @@ For lights, use the 'domain' parameter, NOT 'device_class':
 - HassTurnOn({'name': 'bedroom light'}) - turn on by name
 - HassTurnOn({'domain': ['light'], 'area': 'bedroom'}) - turn on all lights in an area
 - HassTurnOff({'domain': ['light'], 'floor': 'upstairs'}) - turn off all lights on a floor
+
+For setting brightness or color, use HassLightSet:
+- HassLightSet({'area': 'office', 'brightness': 50}) - set brightness to 50%
+- HassLightSet({'area': 'office', 'color': 'red'}) - set color to red
+- HassLightSet({'name': 'bedroom light', 'color': 'amber'}) - set color to amber
+
+IMPORTANT: Always TRY to set colors/brightness with HassLightSet. Don't assume a light can't change color - let Home Assistant determine that.
 
 IMPORTANT: 'light' is NOT a valid device_class. Use 'domain': ['light'] for lights.
 

@@ -292,7 +292,7 @@ class LangChainRouterAgentV2:
                     formatted_tc = {
                         "id": tc.get("id", str(uuid.uuid4())),
                         "name": tc["name"],
-                        "args": {k: v for k, v in tc["args"].items() if v is not None}
+                        "args": {k: v for k, v in tc["args"].items() if v is not None and v != ""}
                     }
                     tool_calls.append(formatted_tc)
 

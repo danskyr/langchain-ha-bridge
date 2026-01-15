@@ -1,5 +1,5 @@
 # Next time
-- Review last session report.
+- Add back in the IOT node, etc. now that we have semantic routing 
 - Test out tools and identify bugs as well as opportunities for improvement.
 - Get weather working. Looks like it may need to call the `GetLiveContext` tool, but the tool description does not seem to give enough context that weather could be retrieved or specifically what context can be retrieved. Do we have a list of entities/devices when we are called? Maybe we can split this into multiple psuedo tools to raise awareness of options to the LLM.
 

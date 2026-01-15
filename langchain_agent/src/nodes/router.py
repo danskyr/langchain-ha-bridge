@@ -2,31 +2,24 @@ import logging
 from typing import Dict, Any, Sequence
 from ..state import RouterState
 from ..utils import preview_text
+from ..semantic_router import classify_intent
 
 logger = logging.getLogger('langchain_agent.nodes.router')
 
 
 def router_node(state: RouterState) -> Dict[str, Any]:
-    """Determine which handlers should process this query."""
+    """Determine which handlers should process this query using semantic routing."""
     query = state["query"]
     logger.info(f"[router] Analyzing query: {preview_text(query, 100)}")
 
+    intent = classify_intent(query)
+
     route_types = []
-
-    query_lower = query.lower()
-
-    iot_keywords = [
-        "turn", "set", "light", "temperature", "switch", "device", "open", "close",
-        "add", "list", "todo", "shopping", "remove", "delete", "complete", "task"
-    ]
-    if any(keyword in query_lower for keyword in iot_keywords):
+    if intent == "iot":
         route_types.append("iot")
-
-    search_keywords = ["what", "who", "when", "where", "weather", "news", "search", "find"]
-    if any(keyword in query_lower for keyword in search_keywords):
+    elif intent == "search":
         route_types.append("search")
-
-    if not route_types:
+    else:
         route_types.append("general")
 
     logger.info(f"[router] Routes selected: {route_types}")

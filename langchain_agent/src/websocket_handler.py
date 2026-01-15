@@ -78,6 +78,13 @@ class WebSocketHandler:
                 conversation_id=conv_id
             )
 
+            # Log execution trace if available
+            if result.get("execution_trace"):
+                ascii_trace = self.router_agent.tracer.render_ascii()
+                if ascii_trace:
+                    for line in ascii_trace.split("\n"):
+                        conversation_logger.info(line)
+
             # Forward response back to HA
             await ws.send_json({
                 "type": result.get("type", "response"),

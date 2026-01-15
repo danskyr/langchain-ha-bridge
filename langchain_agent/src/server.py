@@ -16,6 +16,7 @@ import json
 import asyncio
 
 from langchain_agent.src.router_agent_v2 import LangChainRouterAgentV2
+from langchain_agent.src.mock_data_capture import mock_capture
 
 
 def setup_file_logging():
@@ -217,6 +218,8 @@ async def process(req: OpenAITextCompletionRequest):
     conversation_logger.info(f"Has tools: {bool(req.tools)} ({len(req.tools) if req.tools else 0} tools)")
     conversation_logger.info(f"Has tool results: {bool(req.tool_results)} ({len(req.tool_results) if req.tool_results else 0} results)")
 
+    mock_capture.capture_request(conv_id, req.model_dump())
+
     if req.tool_results:
         conversation_logger.info("Tool Results:")
         for i, result in enumerate(req.tool_results, 1):
@@ -243,6 +246,14 @@ async def process(req: OpenAITextCompletionRequest):
         conversation_id=req.conversation_id
     )
 
+    # Log execution trace if available
+    execution_trace = result.get("execution_trace")
+    if execution_trace:
+        ascii_trace = router_agent.tracer.render_ascii()
+        if ascii_trace:
+            for line in ascii_trace.split("\n"):
+                conversation_logger.info(line)
+
     # Return appropriate response based on result type
     if result.get("type") == "tool_call":
         logger.info(f"  🔧 [process] Returning {len(result.get('tool_calls', []))} tool calls")
@@ -263,11 +274,13 @@ async def process(req: OpenAITextCompletionRequest):
         conversation_logger.info(f"Conversation ID: {result.get('conversation_id')}")
         conversation_logger.info("=" * 80 + "\n")
 
-        return OurResponse(
+        response = OurResponse(
             type="tool_call",
             tool_calls=[ToolCall(**tc) for tc in result["tool_calls"]],
             conversation_id=result.get("conversation_id")
         )
+        mock_capture.capture_response(conv_id, response.model_dump())
+        return response
     else:
         logger.info(f"  ✓ [process] Returning final response")
         logger.info(f"  ← [process] Returning HTTP 200 with response")
@@ -281,11 +294,13 @@ async def process(req: OpenAITextCompletionRequest):
             conversation_logger.info(f"   continue_conversation: {continue_conversation}")
         conversation_logger.info("=" * 80 + "\n")
 
-        return OurResponse(
+        response = OurResponse(
             response=response_text,
             type="response",
             continue_conversation=continue_conversation
         )
+        mock_capture.capture_response(conv_id, response.model_dump())
+        return response
 
 
 # @app.post("/v1/completions", response_model=OpenAICompatibleResponse)

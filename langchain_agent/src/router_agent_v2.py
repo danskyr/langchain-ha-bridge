@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+from dataclasses import asdict
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
@@ -12,6 +13,7 @@ from langgraph.prebuilt import ToolNode
 
 from .state import RouterState
 from .utils import create_tavily_tool, preview_text
+from .execution_tracer import ExecutionTracer, ExecutionTrace
 from .nodes import (
     router_node,
     route_to_handlers,
@@ -112,6 +114,7 @@ class LangChainRouterAgentV2:
             self.logger.warning("Tavily API key not found - web search will not be available")
 
         self.checkpointer = MemorySaver()
+        self.tracer = ExecutionTracer()
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -176,6 +179,61 @@ class LangChainRouterAgentV2:
 
         return workflow.compile(checkpointer=self.checkpointer)
 
+    async def _invoke_with_tracing(
+        self,
+        state: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Invoke graph with event streaming to capture execution trace."""
+        result: Dict[str, Any] = {}
+
+        graph_nodes = {"router", "announcement", "iot_handler", "general_handler",
+                       "aggregator", "agent", "tool_call_validation", "formatter", "local_tools"}
+
+        async for event in self.graph.astream_events(state, config, version="v2"):
+            event_type = event.get("event", "")
+            event_name = event.get("name", "")
+
+            if event_type == "on_chain_start" and event_name in graph_nodes:
+                metadata = {}
+                if event_name == "router":
+                    data = event.get("data", {})
+                    if "input" in data and isinstance(data["input"], dict):
+                        metadata["route_types"] = data["input"].get("route_types", [])
+                self.tracer.record_node_start(event_name, metadata)
+
+            elif event_type == "on_chain_end" and event_name in graph_nodes:
+                output = event.get("data", {}).get("output", {})
+                if event_name == "router" and isinstance(output, dict):
+                    for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
+                        if node.name == "router":
+                            node.metadata["route_types"] = output.get("route_types", [])
+                elif event_name == "agent" and isinstance(output, dict):
+                    messages = output.get("messages", [])
+                    if messages:
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                            for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
+                                if node.name == "agent":
+                                    node.metadata["tool_calls"] = last_msg.tool_calls
+                elif event_name == "tool_call_validation" and isinstance(output, dict):
+                    for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
+                        if node.name == "tool_call_validation":
+                            messages = output.get("messages", [])
+                            if messages:
+                                last_msg = messages[-1]
+                                if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                                    node.metadata["decision"] = "ha_tools"
+                                elif output.get("final_response"):
+                                    node.metadata["decision"] = "formatter"
+
+                self.tracer.record_node_end(event_name)
+
+            elif event_type == "on_chain_end" and event_name == "LangGraph":
+                result = event.get("data", {}).get("output", {})
+
+        return result
+
     async def process(
         self,
         messages: List[Dict[str, Any]],
@@ -202,6 +260,7 @@ class LangChainRouterAgentV2:
         thread_id = conversation_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
+        self.tracer.start_trace(thread_id)
         self.logger.info(f"[process] Thread: {thread_id[:8]}... | Messages: {len(messages)}")
 
         # Extract query from last user message
@@ -244,22 +303,36 @@ class LangChainRouterAgentV2:
                 "validation_attempts": 1
             }
 
-            result = await self.graph.ainvoke(state_update, config)
+            result = await self._invoke_with_tracing(state_update, config)
         else:
             self.logger.info(f"[process] Starting new/continuing conversation")
 
-            # Build conversation history from previous messages (excluding current query)
-            # Find index of last user message (current query) and take history before it
-            history_messages: List[Dict[str, Any]] = []
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "user":
-                    history_messages = messages[:i]
-                    break
+            # Check if checkpointer already has state for this thread
+            # If so, don't pass history again (avoids duplicates)
+            existing_checkpoint = self.checkpointer.get(config)
+            has_existing_state = (
+                existing_checkpoint is not None
+                and isinstance(existing_checkpoint, dict)
+                and existing_checkpoint.get("channel_values", {}).get("messages")
+            )
+            self.logger.info(f"[process] has_existing_state: {has_existing_state}")
 
-            # Convert to LangChain format and limit to last N messages
-            conversation_history = convert_ha_messages_to_langchain(history_messages)
-            if len(conversation_history) > MAX_HISTORY_MESSAGES:
-                conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
+            if has_existing_state:
+                self.logger.info(f"[process] Thread has existing state, only adding new query")
+                conversation_history: List[BaseMessage] = []
+            else:
+                # Build conversation history from previous messages (excluding current query)
+                # Find index of last user message (current query) and take history before it
+                history_messages: List[Dict[str, Any]] = []
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "user":
+                        history_messages = messages[:i]
+                        break
+
+                # Convert to LangChain format and limit to last N messages
+                conversation_history = convert_ha_messages_to_langchain(history_messages)
+                if len(conversation_history) > MAX_HISTORY_MESSAGES:
+                    conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
 
             self.logger.info(f"[process] Including {len(conversation_history)} history messages for context")
 
@@ -275,7 +348,9 @@ class LangChainRouterAgentV2:
                 "streaming_events": []
             }
 
-            result = await self.graph.ainvoke(initial_state, config)
+            result = await self._invoke_with_tracing(initial_state, config)
+
+        execution_trace = self.tracer.end_trace()
 
         result_messages = result.get("messages", [])
         if result_messages:
@@ -304,7 +379,8 @@ class LangChainRouterAgentV2:
                 return {
                     "type": "tool_call",
                     "tool_calls": tool_calls,
-                    "conversation_id": thread_id
+                    "conversation_id": thread_id,
+                    "execution_trace": asdict(execution_trace) if execution_trace else None
                 }
 
         final_response = result.get("final_response", "No response generated")
@@ -315,7 +391,8 @@ class LangChainRouterAgentV2:
         return {
             "type": "response",
             "response": final_response,
-            "continue_conversation": continue_conversation
+            "continue_conversation": continue_conversation,
+            "execution_trace": asdict(execution_trace) if execution_trace else None
         }
 
 

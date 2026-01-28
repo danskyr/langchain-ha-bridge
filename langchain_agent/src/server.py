@@ -253,6 +253,7 @@ async def process(req: OpenAITextCompletionRequest):
         if ascii_trace:
             for line in ascii_trace.split("\n"):
                 conversation_logger.info(line)
+                logger.info(line)
 
     # Return appropriate response based on result type
     if result.get("type") == "tool_call":

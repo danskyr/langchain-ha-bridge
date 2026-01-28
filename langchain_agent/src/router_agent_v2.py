@@ -288,6 +288,8 @@ class LangChainRouterAgentV2:
             for tr in tool_results:
                 self.logger.info(f"[process]   - {tr.get('tool_name', 'unknown')}: {str(tr.get('result', ''))[:100]}")
 
+            self.tracer.record_ha_roundtrip(tool_results)
+
             # Convert to LangGraph ToolMessages and invoke
             tool_messages = [
                 ToolMessage(
@@ -350,14 +352,15 @@ class LangChainRouterAgentV2:
 
             result = await self._invoke_with_tracing(initial_state, config)
 
-        execution_trace = self.tracer.end_trace()
-
         result_messages = result.get("messages", [])
         if result_messages:
             last_message = result_messages[-1]
 
             if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                 self.logger.info(f"[process] Returning {len(last_message.tool_calls)} tool calls")
+
+                # Non-final round: keep the trace alive for the next round
+                self.tracer.end_trace(final=False)
 
                 ha_tools = result.get("tools", [])
                 tool_defs_by_name = {tool.get("function", {}).get("name"): tool for tool in ha_tools}
@@ -380,8 +383,11 @@ class LangChainRouterAgentV2:
                     "type": "tool_call",
                     "tool_calls": tool_calls,
                     "conversation_id": thread_id,
-                    "execution_trace": asdict(execution_trace) if execution_trace else None
+                    "execution_trace": None
                 }
+
+        # Final round: finalize the trace
+        execution_trace = self.tracer.end_trace(final=True)
 
         final_response = result.get("final_response", "No response generated")
         continue_conversation = result.get("continue_conversation")

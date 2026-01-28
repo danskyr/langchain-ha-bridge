@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
+STALE_TRACE_TTL_SECONDS = 300  # 5 minutes
+
+
 @dataclass
 class NodeExecution:
     name: str
@@ -24,6 +27,7 @@ class ExecutionTrace:
     start_time: float = field(default_factory=time.time)
     end_time: Optional[float] = None
     conversation_id: str = ""
+    rounds: int = 1
 
     @property
     def total_duration_s(self) -> float:
@@ -52,11 +56,35 @@ class ExecutionTracer:
         self.enabled = os.getenv("LOG_EXECUTION_PATH", "true").lower() == "true"
         self.current_trace: Optional[ExecutionTrace] = None
         self._node_start_times: Dict[str, float] = {}
+        self._active_traces: Dict[str, ExecutionTrace] = {}
+        self._trace_timestamps: Dict[str, float] = {}
+
+    def _cleanup_stale_traces(self) -> None:
+        now = time.time()
+        stale_keys = [
+            k for k, ts in self._trace_timestamps.items()
+            if now - ts > STALE_TRACE_TTL_SECONDS
+        ]
+        for k in stale_keys:
+            self._active_traces.pop(k, None)
+            self._trace_timestamps.pop(k, None)
 
     def start_trace(self, conversation_id: str = "") -> None:
         if not self.enabled:
             return
-        self.current_trace = ExecutionTrace(conversation_id=conversation_id)
+
+        self._cleanup_stale_traces()
+
+        if conversation_id and conversation_id in self._active_traces:
+            self.current_trace = self._active_traces[conversation_id]
+            self.current_trace.rounds += 1
+            self._trace_timestamps[conversation_id] = time.time()
+        else:
+            self.current_trace = ExecutionTrace(conversation_id=conversation_id)
+            if conversation_id:
+                self._active_traces[conversation_id] = self.current_trace
+                self._trace_timestamps[conversation_id] = time.time()
+
         self._node_start_times = {}
 
     def record_node_start(self, name: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -76,106 +104,133 @@ class ExecutionTracer:
                 node.end_time = end_time
                 break
 
-    def end_trace(self) -> Optional[ExecutionTrace]:
+    def record_ha_roundtrip(self, tool_calls: List[Dict[str, Any]]) -> None:
+        if not self.enabled or not self.current_trace:
+            return
+        tool_names = [tc.get("tool_name", tc.get("name", "unknown")) for tc in tool_calls]
+        self.current_trace.nodes.append(
+            NodeExecution(
+                name="ha_tool_execution",
+                start_time=time.time(),
+                end_time=time.time(),
+                metadata={"tool_names": tool_names}
+            )
+        )
+
+    def end_trace(self, final: bool = True) -> Optional[ExecutionTrace]:
         if not self.enabled or not self.current_trace:
             return None
+
+        if not final:
+            self._trace_timestamps[self.current_trace.conversation_id] = time.time()
+            return None
+
         self.current_trace.end_time = time.time()
+        conv_id = self.current_trace.conversation_id
+        self._active_traces.pop(conv_id, None)
+        self._trace_timestamps.pop(conv_id, None)
         return self.current_trace
 
     def render_ascii(self) -> str:
         if not self.current_trace or not self.current_trace.nodes:
             return ""
 
-        visited = {n.name for n in self.current_trace.nodes}
-        node_metadata = {n.name: n.metadata for n in self.current_trace.nodes}
-        node_times = {n.name: n.duration_ms for n in self.current_trace.nodes}
-
         lines: List[str] = []
         lines.append("=" * 80)
         lines.append(f"EXECUTION PATH | Conversation: {self.current_trace.conversation_id[:12]}...")
         lines.append("=" * 80)
         lines.append("")
-
         lines.append("  START")
         lines.append("    │")
         lines.append("    ▼")
 
-        if "router" in visited:
-            lines.extend(self._render_node("router", node_metadata, node_times))
+        nodes = self.current_trace.nodes
+        i = 0
+        # Render the initial router + parallel handlers section
+        while i < len(nodes) and nodes[i].name == "router":
+            self._append_node_lines(lines, nodes[i])
             lines.append("     │")
+            i += 1
 
-            parallel_visited = [n for n in ["iot_handler", "general_handler", "announcement"] if n in visited]
-            if parallel_visited:
-                lines.extend(self._render_parallel_nodes(parallel_visited, node_metadata, node_times))
+            # Collect parallel handler nodes
+            parallel_batch: List[NodeExecution] = []
+            while i < len(nodes) and nodes[i].name in PARALLEL_NODES:
+                parallel_batch.append(nodes[i])
+                i += 1
+            if parallel_batch:
+                lines.extend(self._render_parallel_executions(parallel_batch))
                 lines.append("")
+            break
 
-        if "aggregator" in visited:
-            lines.extend(self._render_centered_node("aggregator", node_metadata, node_times))
-            lines.append("")
-
-        if "agent" in visited:
-            lines.extend(self._render_centered_node("agent", node_metadata, node_times))
-            lines.append("")
-
-        if "tool_call_validation" in visited:
-            lines.extend(self._render_centered_node("tool_call_validation", node_metadata, node_times))
-            lines.append("")
-
-        if "local_tools" in visited:
-            lines.extend(self._render_centered_node("local_tools", node_metadata, node_times))
-            lines.append("                        │")
-            lines.append("                        ▼")
-            if "agent" in visited:
-                lines.append("                  (back to agent)")
+        # Render remaining nodes sequentially
+        while i < len(nodes):
+            node = nodes[i]
+            if node.name == "ha_tool_execution":
+                lines.extend(self._render_ha_boundary(node))
                 lines.append("")
+            else:
+                lines.extend(self._render_centered_execution(node))
+                lines.append("")
+            i += 1
 
-        if "formatter" in visited:
-            lines.extend(self._render_centered_node("formatter", node_metadata, node_times))
-            lines.append("")
-
-        end_reason = self._get_end_reason(node_metadata)
+        end_reason = self._get_end_reason_from_nodes(nodes)
         lines.append(f"                    [END] {end_reason}")
         lines.append("")
 
-        tool_calls = self._count_tool_calls(node_metadata)
-        lines.append(f"Total: {self.current_trace.total_duration_s:.2f}s | Nodes: {len(visited)} | Tool calls: {tool_calls}")
+        tool_calls = self._count_tool_calls_from_nodes(nodes)
+        rounds = self.current_trace.rounds
+        node_count = len(nodes)
+        lines.append(
+            f"Total: {self.current_trace.total_duration_s:.2f}s | "
+            f"Rounds: {rounds} | Nodes: {node_count} | Tool calls: {tool_calls}"
+        )
         lines.append("=" * 80)
 
         return "\n".join(lines)
 
-    def _render_node(self, name: str, metadata: Dict[str, Dict], times: Dict[str, float]) -> List[str]:
-        width = max(len(name) + 2, 11)
-        meta_str = self._format_metadata(name, metadata.get(name, {}))
-        time_str = f" ({times.get(name, 0):.0f}ms)" if times.get(name, 0) > 0 else ""
+    def _append_node_lines(self, lines: List[str], node: NodeExecution) -> None:
+        width = max(len(node.name) + 2, 11)
+        meta_str = self._format_metadata(node.name, node.metadata)
+        time_str = f" ({node.duration_ms:.0f}ms)" if node.duration_ms > 0 else ""
 
-        lines = [
-            f"┌{'─' * width}┐",
-            f"│ {name.center(width - 2)} │{meta_str}{time_str}",
-            f"└{'─' * (width // 2)}┬{'─' * (width - width // 2 - 1)}┘",
-        ]
-        return lines
+        lines.append(f"┌{'─' * width}┐")
+        lines.append(f"│ {node.name.center(width - 2)} │{meta_str}{time_str}")
+        lines.append(f"└{'─' * (width // 2)}┬{'─' * (width - width // 2 - 1)}┘")
 
-    def _render_centered_node(self, name: str, metadata: Dict[str, Dict], times: Dict[str, float]) -> List[str]:
-        width = max(len(name) + 4, 14)
-        meta_str = self._format_metadata(name, metadata.get(name, {}))
-        time_str = f" ({times.get(name, 0):.0f}ms)" if times.get(name, 0) > 0 else ""
+    def _render_centered_execution(self, node: NodeExecution) -> List[str]:
+        width = max(len(node.name) + 4, 14)
+        meta_str = self._format_metadata(node.name, node.metadata)
+        time_str = f" ({node.duration_ms:.0f}ms)" if node.duration_ms > 0 else ""
 
         padding = " " * 14
-        lines = [
+        return [
             f"{padding}     │",
             f"{padding}     ▼",
             f"{padding}┌{'─' * width}┐",
-            f"{padding}│ {name.center(width - 2)} │{meta_str}{time_str}",
+            f"{padding}│ {node.name.center(width - 2)} │{meta_str}{time_str}",
             f"{padding}└{'─' * width}┘",
         ]
-        return lines
 
-    def _render_parallel_nodes(self, nodes: List[str], metadata: Dict[str, Dict], times: Dict[str, float]) -> List[str]:
+    def _render_ha_boundary(self, node: NodeExecution) -> List[str]:
+        tool_names = node.metadata.get("tool_names", [])
+        label = f"   HA executes: {', '.join(tool_names)}   "
+        width = max(len(label), 20)
+        label = label.center(width)
+
+        padding = " " * 14
+        return [
+            f"{padding}     │",
+            f"{padding}     ▼",
+            f"{padding}╔{'═' * width}╗",
+            f"{padding}║{label}║",
+            f"{padding}╚{'═' * width}╝",
+        ]
+
+    def _render_parallel_executions(self, nodes: List[NodeExecution]) -> List[str]:
         if not nodes:
             return []
 
-        widths = [max(len(n) + 2, 12) for n in nodes]
-
+        widths = [max(len(n.name) + 2, 12) for n in nodes]
         lines: List[str] = []
 
         if len(nodes) > 1:
@@ -186,11 +241,8 @@ class ExecutionTracer:
             lines.append(branch)
 
         arrows = "     "
-        for i, (n, w) in enumerate(zip(nodes, widths)):
-            if i == 0:
-                arrows += "▼" + " " * (w + 2)
-            else:
-                arrows += "▼" + " " * (w + 2)
+        for _i, (_n, w) in enumerate(zip(nodes, widths)):
+            arrows += "▼" + " " * (w + 2)
         lines.append(arrows.rstrip())
 
         top_line = "  "
@@ -200,7 +252,7 @@ class ExecutionTracer:
 
         mid_line = "  "
         for n, w in zip(nodes, widths):
-            mid_line += "│" + n.center(w) + "│  "
+            mid_line += "│" + n.name.center(w) + "│  "
         lines.append(mid_line.rstrip())
 
         bot_line = "  "
@@ -236,15 +288,20 @@ class ExecutionTracer:
 
         return ""
 
-    def _get_end_reason(self, metadata: Dict[str, Dict]) -> str:
-        validation_meta = metadata.get("tool_call_validation", {})
-        decision = validation_meta.get("decision", "")
-        if decision == "ha_tools":
-            return "(returning tool calls to HA)"
-        elif decision == "formatter":
-            return "(formatted response)"
+    def _get_end_reason_from_nodes(self, nodes: List[NodeExecution]) -> str:
+        for node in reversed(nodes):
+            if node.name == "tool_call_validation":
+                decision = node.metadata.get("decision", "")
+                if decision == "ha_tools":
+                    return "(returning tool calls to HA)"
+                elif decision == "formatter":
+                    return "(formatted response)"
+                break
         return ""
 
-    def _count_tool_calls(self, metadata: Dict[str, Dict]) -> int:
-        agent_meta = metadata.get("agent", {})
-        return len(agent_meta.get("tool_calls", []))
+    def _count_tool_calls_from_nodes(self, nodes: List[NodeExecution]) -> int:
+        count = 0
+        for node in nodes:
+            if node.name == "agent" and "tool_calls" in node.metadata:
+                count += len(node.metadata["tool_calls"])
+        return count

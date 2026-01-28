@@ -17,8 +17,9 @@ from .execution_tracer import ExecutionTracer, ExecutionTrace
 from .nodes import (
     router_node,
     route_to_handlers,
-    iot_handler_node,
-    general_handler_node,
+    create_iot_handler_node,
+    create_search_handler_node,
+    create_general_handler_node,
     aggregator_node,
     create_agent_node,
     create_validation_node,
@@ -44,14 +45,7 @@ MAX_HISTORY_MESSAGES = 10
 
 
 def convert_ha_messages_to_langchain(messages: List[Dict[str, Any]]) -> List[BaseMessage]:
-    """Convert Home Assistant message format to LangChain BaseMessage types.
-
-    Args:
-        messages: List of HA messages with 'role' and 'content' keys
-
-    Returns:
-        List of LangChain BaseMessage objects
-    """
+    """Convert Home Assistant message format to LangChain BaseMessage types."""
     result: List[BaseMessage] = []
 
     for msg in messages:
@@ -77,13 +71,14 @@ def convert_ha_messages_to_langchain(messages: List[Dict[str, Any]]) -> List[Bas
 
 class LangChainRouterAgentV2:
     """
-    Improved router agent with proper LangGraph architecture.
+    Router agent with meaningful handler nodes.
 
-    Features:
-    - Checkpointing for distributed tool execution
-    - Parallel handler execution
-    - Clean state management with reducers
-    - Integrated tool support with interrupts
+    Graph flow:
+    START -> router -> [iot_handler | search_handler | general_handler] + announcement
+                    -> aggregator -> agent (tool-result only) -> tool_call_validation -> formatter -> END
+
+    Each handler does the actual LLM work for its intent type.
+    The agent node only handles tool-result continuation after HA executes tools.
     """
 
     def __init__(self) -> None:
@@ -105,7 +100,7 @@ class LangChainRouterAgentV2:
             temperature=0
         )
 
-        self.local_tools = []
+        self.local_tools: list = []
         tavily_tool = create_tavily_tool()
         if tavily_tool:
             self.local_tools.append(tavily_tool)
@@ -118,16 +113,20 @@ class LangChainRouterAgentV2:
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
-        """Build the state graph with checkpointing and interrupts."""
+        """Build the state graph with exclusive handler routing."""
         workflow = StateGraph(RouterState)
 
         agent_node = create_agent_node(self)
         validation_node = create_validation_node(self)
+        iot_handler = create_iot_handler_node(self)
+        search_handler = create_search_handler_node(self)
+        general_handler = create_general_handler_node(self)
 
         workflow.add_node("router", router_node)
         workflow.add_node("announcement", announcement_node)
-        workflow.add_node("iot_handler", iot_handler_node)
-        workflow.add_node("general_handler", general_handler_node)
+        workflow.add_node("iot_handler", iot_handler)
+        workflow.add_node("search_handler", search_handler)
+        workflow.add_node("general_handler", general_handler)
         workflow.add_node("aggregator", aggregator_node)
         workflow.add_node("agent", agent_node)
         workflow.add_node("tool_call_validation", validation_node)
@@ -138,25 +137,23 @@ class LangChainRouterAgentV2:
 
         workflow.add_edge(START, "router")
 
-        # After router, branch to both announcement and handlers
+        # Exclusive routing: exactly one handler runs per query
         workflow.add_conditional_edges(
             "router",
             route_to_handlers,
-            ["iot_handler", "general_handler"]
+            ["iot_handler", "search_handler", "general_handler"]
         )
 
-        # Also run announcement in parallel (non-blocking)
+        # Announcement runs in parallel with the selected handler
         workflow.add_edge("router", "announcement")
 
-        # Handlers go to aggregator
+        # All handlers converge to aggregator
         workflow.add_edge("iot_handler", "aggregator")
+        workflow.add_edge("search_handler", "aggregator")
         workflow.add_edge("general_handler", "aggregator")
-
-        # Announcement also goes to aggregator (to ensure it completes before agent)
         workflow.add_edge("announcement", "aggregator")
 
         workflow.add_edge("aggregator", "agent")
-
         workflow.add_edge("agent", "tool_call_validation")
 
         validation_edge_map = {
@@ -187,8 +184,9 @@ class LangChainRouterAgentV2:
         """Invoke graph with event streaming to capture execution trace."""
         result: Dict[str, Any] = {}
 
-        graph_nodes = {"router", "announcement", "iot_handler", "general_handler",
-                       "aggregator", "agent", "tool_call_validation", "formatter", "local_tools"}
+        graph_nodes = {"router", "announcement", "iot_handler", "search_handler",
+                       "general_handler", "aggregator", "agent", "tool_call_validation",
+                       "formatter", "local_tools"}
 
         async for event in self.graph.astream_events(state, config, version="v2"):
             event_type = event.get("event", "")
@@ -215,6 +213,14 @@ class LangChainRouterAgentV2:
                         if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
                             for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
                                 if node.name == "agent":
+                                    node.metadata["tool_calls"] = last_msg.tool_calls
+                elif event_name in ("iot_handler", "search_handler", "general_handler") and isinstance(output, dict):
+                    messages = output.get("messages", [])
+                    if messages:
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                            for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
+                                if node.name == event_name:
                                     node.metadata["tool_calls"] = last_msg.tool_calls
                 elif event_name == "tool_call_validation" and isinstance(output, dict):
                     for node in self.tracer.current_trace.nodes if self.tracer.current_trace else []:
@@ -248,14 +254,6 @@ class LangChainRouterAgentV2:
         - {"role": "user", "content": "..."}
         - {"role": "assistant", "content": "...", "tool_calls": [...]}
         - {"role": "tool_result", "tool_call_id": "...", "tool_name": "...", "tool_result": {...}}
-
-        Args:
-            messages: Full message history from HA
-            tools: Available tools from Home Assistant
-            conversation_id: Thread ID for resuming conversation
-
-        Returns:
-            Dict with either tool_calls or final response
         """
         thread_id = conversation_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
@@ -263,17 +261,13 @@ class LangChainRouterAgentV2:
         self.tracer.start_trace(thread_id)
         self.logger.info(f"[process] Thread: {thread_id[:8]}... | Messages: {len(messages)}")
 
-        # Extract query from last user message
         query = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 query = msg.get("content", "")
                 break
 
-        # Check if we have tool results (continuation)
         if messages and messages[-1].get("role") == "tool_result":
-            # Extract ONLY the latest batch of consecutive tool results from the end
-            # (not all tool_results from entire conversation history)
             tool_results = []
             for m in reversed(messages):
                 if m.get("role") == "tool_result":
@@ -290,7 +284,6 @@ class LangChainRouterAgentV2:
 
             self.tracer.record_ha_roundtrip(tool_results)
 
-            # Convert to LangGraph ToolMessages and invoke
             tool_messages = [
                 ToolMessage(
                     content=str(tr.get("result", "")),
@@ -300,7 +293,7 @@ class LangChainRouterAgentV2:
                 for tr in tool_results
             ]
 
-            state_update = {
+            state_update: Dict[str, Any] = {
                 "messages": tool_messages,
                 "validation_attempts": 1
             }
@@ -309,8 +302,6 @@ class LangChainRouterAgentV2:
         else:
             self.logger.info(f"[process] Starting new/continuing conversation")
 
-            # Check if checkpointer already has state for this thread
-            # If so, don't pass history again (avoids duplicates)
             existing_checkpoint = self.checkpointer.get(config)
             has_existing_state = (
                 existing_checkpoint is not None
@@ -323,22 +314,19 @@ class LangChainRouterAgentV2:
                 self.logger.info(f"[process] Thread has existing state, only adding new query")
                 conversation_history: List[BaseMessage] = []
             else:
-                # Build conversation history from previous messages (excluding current query)
-                # Find index of last user message (current query) and take history before it
                 history_messages: List[Dict[str, Any]] = []
                 for i in range(len(messages) - 1, -1, -1):
                     if messages[i].get("role") == "user":
                         history_messages = messages[:i]
                         break
 
-                # Convert to LangChain format and limit to last N messages
                 conversation_history = convert_ha_messages_to_langchain(history_messages)
                 if len(conversation_history) > MAX_HISTORY_MESSAGES:
                     conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
 
             self.logger.info(f"[process] Including {len(conversation_history)} history messages for context")
 
-            initial_state = {
+            initial_state: Dict[str, Any] = {
                 "messages": conversation_history + [HumanMessage(content=query)],
                 "query": query,
                 "route_types": [],
@@ -347,7 +335,7 @@ class LangChainRouterAgentV2:
                 "tools": tools,
                 "validation_attempts": 1,
                 "preliminary_messages": [],
-                "streaming_events": []
+                "active_handler": None
             }
 
             result = await self._invoke_with_tracing(initial_state, config)
@@ -359,7 +347,6 @@ class LangChainRouterAgentV2:
             if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                 self.logger.info(f"[process] Returning {len(last_message.tool_calls)} tool calls")
 
-                # Non-final round: keep the trace alive for the next round
                 self.tracer.end_trace(final=False)
 
                 ha_tools = result.get("tools", [])
@@ -386,7 +373,6 @@ class LangChainRouterAgentV2:
                     "execution_trace": None
                 }
 
-        # Final round: finalize the trace
         execution_trace = self.tracer.end_trace(final=True)
 
         final_response = result.get("final_response", "No response generated")
@@ -419,7 +405,6 @@ if __name__ == "__main__":
                     print("Goodbye!")
                     break
 
-                # Use new messages-based interface
                 messages = [{"role": "user", "content": input_query}]
                 response = await agent.process(messages=messages)
                 print(f"Agent: {response}\n")

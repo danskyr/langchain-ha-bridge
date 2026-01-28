@@ -45,15 +45,8 @@ def announcement_node(state: RouterState) -> Dict[str, Any]:
     if preliminary_messages:
         logger.info(f"[announcement] Emitting: {preliminary_messages[0]}")
 
-        # Also create a streaming event for immediate delivery
-        streaming_event = {
-            "type": "preliminary",
-            "content": preliminary_messages[0]
-        }
-
         return {
             "preliminary_messages": preliminary_messages,
-            "streaming_events": [streaming_event]
         }
 
     logger.info("[announcement] No announcement needed for this query")

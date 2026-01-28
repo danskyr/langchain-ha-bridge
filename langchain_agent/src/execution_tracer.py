@@ -37,8 +37,9 @@ class ExecutionTrace:
 
 
 GRAPH_STRUCTURE = {
-    "router": {"next": ["iot_handler", "general_handler", "announcement"], "parallel": True},
+    "router": {"next": ["iot_handler", "search_handler", "general_handler", "announcement"], "parallel": True},
     "iot_handler": {"next": ["aggregator"], "parallel": False},
+    "search_handler": {"next": ["aggregator"], "parallel": False},
     "general_handler": {"next": ["aggregator"], "parallel": False},
     "announcement": {"next": ["aggregator"], "parallel": False},
     "aggregator": {"next": ["agent"], "parallel": False},
@@ -48,7 +49,7 @@ GRAPH_STRUCTURE = {
     "formatter": {"next": ["END"], "parallel": False},
 }
 
-PARALLEL_NODES = {"iot_handler", "general_handler", "announcement"}
+PARALLEL_NODES = {"iot_handler", "search_handler", "general_handler", "announcement"}
 
 
 class ExecutionTracer:

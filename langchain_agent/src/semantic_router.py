@@ -155,5 +155,5 @@ def classify_intent(query: str) -> str:
     router = _init_router()
     result = router(query)
     route_name = result.name if result else "general"
-    logger.info(f"[semantic_router] '{query}' -> {route_name}")
+    logger.info(f"[semantic_router] '{query}' -> {route_name} ({result.similarity_score})")
     return route_name

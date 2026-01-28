@@ -8,7 +8,7 @@ logger = logging.getLogger('langchain_agent.nodes.router')
 
 
 def router_node(state: RouterState) -> Dict[str, Any]:
-    """Determine which handlers should process this query using semantic routing."""
+    """Determine which handler should process this query using semantic routing."""
     query = state["query"]
     logger.info(f"[router] Analyzing query: {preview_text(query, 100)}")
 
@@ -30,15 +30,15 @@ def router_node(state: RouterState) -> Dict[str, Any]:
 
 
 def route_to_handlers(state: RouterState) -> Sequence[str]:
-    """Return list of handler nodes to execute in parallel."""
+    """Route to exactly one handler based on classified intent."""
     route_types = state.get("route_types", ["general"])
 
-    handlers = []
     if "iot" in route_types:
-        handlers.append("iot_handler")
-    # Search routes go to general handler (which has Tavily access)
-    if "general" in route_types or "search" in route_types or not handlers:
-        handlers.append("general_handler")
+        handler = "iot_handler"
+    elif "search" in route_types:
+        handler = "search_handler"
+    else:
+        handler = "general_handler"
 
-    logger.info(f"[route_to_handlers] Will execute: {handlers}")
-    return handlers
+    logger.info(f"[route_to_handlers] Will execute: {handler}")
+    return [handler]

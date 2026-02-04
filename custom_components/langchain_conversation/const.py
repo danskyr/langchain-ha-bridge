@@ -1,1 +1,1 @@
-DOMAIN = "langchain_conversation_agent_proxy"
+DOMAIN = "langchain_conversation"

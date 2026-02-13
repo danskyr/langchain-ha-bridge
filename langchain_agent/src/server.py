@@ -52,7 +52,7 @@ def setup_file_logging():
         backupCount=5,
         encoding='utf-8'
     )
-    main_file_handler.setLevel(logging.INFO)
+    main_file_handler.setLevel(logging.DEBUG)
     main_file_handler.setFormatter(detailed_formatter)
     root_logger.addHandler(main_file_handler)
 

@@ -84,11 +84,11 @@ class LangChainRouterAgentV2:
     def __init__(self) -> None:
         self.logger = logging.getLogger('langchain_agent.LangChainRouterAgentV2')
 
-        self.chat_router = ChatOllama(
-            model="llama3.2:3b",
-            base_url="http://localhost:11434",
-            temperature=0
-        )
+        # self.chat_router = ChatOllama(
+        #     model="llama3.2:3b",
+        #     base_url="http://localhost:11434",
+        #     temperature=0
+        # )
         self.chat_device = ChatOllama(
             model="qwen2.5:3b",
             base_url="http://localhost:11434",
@@ -148,12 +148,12 @@ class LangChainRouterAgentV2:
         workflow.add_edge("router", "announcement")
 
         # All handlers converge to aggregator
-        workflow.add_edge("iot_handler", "aggregator")
-        workflow.add_edge("search_handler", "aggregator")
-        workflow.add_edge("general_handler", "aggregator")
-        workflow.add_edge("announcement", "aggregator")
+        workflow.add_edge("iot_handler", "agent")
+        workflow.add_edge("search_handler", "agent")
+        workflow.add_edge("general_handler", "agent")
+        workflow.add_edge("announcement", "agent")
 
-        workflow.add_edge("aggregator", "agent")
+        # workflow.add_edge("aggregator", "agent")
         workflow.add_edge("agent", "tool_call_validation")
 
         validation_edge_map = {

@@ -1,4 +1,5 @@
 """WebSocket handler for HA communication - thin routing layer."""
+import json
 import logging
 import uuid
 from typing import Dict
@@ -50,10 +51,13 @@ class WebSocketHandler:
             self.manager.disconnect(client_id)
 
     async def _route_message(self, ws: WebSocket, client_id: str, data: dict):
+        logger.debug(f"WS RECV | {json.dumps(data, indent=2, default=str)}")
         msg_type = data.get("type")
 
         if msg_type == "ping":
-            await ws.send_json({"type": "pong"})
+            response = {"type": "pong"}
+            logger.debug(f"WS SEND | {json.dumps(response, default=str)}")
+            await ws.send_json(response)
 
         elif msg_type == "conversation":
             await self._handle_conversation(ws, data)
@@ -87,20 +91,24 @@ class WebSocketHandler:
                         logger.info(line)
 
             # Forward response back to HA
-            await ws.send_json({
+            response = {
                 "type": result.get("type", "response"),
                 "conversation_id": conv_id,
                 **{k: v for k, v in result.items() if k not in ("type", "conversation_id")}
-            })
+            }
+            logger.debug(f"WS SEND | {json.dumps(response, indent=2, default=str)}")
+            await ws.send_json(response)
 
         except Exception as e:
             logger.error(f"Processing error: {e}", exc_info=True)
-            await ws.send_json({
+            error_response = {
                 "type": "error",
                 "conversation_id": conv_id,
                 "code": "processing_error",
                 "message": str(e)
-            })
+            }
+            logger.debug(f"WS SEND | {json.dumps(error_response, default=str)}")
+            await ws.send_json(error_response)
 
     def _handle_log(self, data: dict):
         level = data.get("level", "INFO").upper()

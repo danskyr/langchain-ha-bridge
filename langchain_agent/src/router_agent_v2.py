@@ -110,9 +110,9 @@ class LangChainRouterAgentV2:
 
         self.checkpointer = MemorySaver()
         self.tracer = ExecutionTracer()
-        self.graph = self._build_graph()
+        self.graph = self._build_graph(checkpointer=self.checkpointer)
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self, checkpointer=None) -> StateGraph:
         """Build the state graph with exclusive handler routing."""
         workflow = StateGraph(RouterState)
 
@@ -174,7 +174,7 @@ class LangChainRouterAgentV2:
 
         workflow.add_edge("formatter", END)
 
-        return workflow.compile(checkpointer=self.checkpointer)
+        return workflow.compile(checkpointer=checkpointer)
 
     async def _invoke_with_tracing(
         self,

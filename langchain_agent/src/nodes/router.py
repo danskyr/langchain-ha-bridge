@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, Sequence
 from ..state import RouterState
 from ..utils import preview_text
-from ..semantic_router import classify_intent
+from ..nli_classifier import classify_intent
 
 logger = logging.getLogger('langchain_agent.nodes.router')
 

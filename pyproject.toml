@@ -36,6 +36,15 @@ langchain-ha-bridge = "langchain_agent.src.__main__:main"
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
 pytest-asyncio = "^0.21.0"
+docker = ">=7.0"
+pytest-timeout = ">=2.2"
+pytest-rerunfailures = ">=13.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["integration: end-to-end integration tests"]
+timeout = 120
 
 [build-system]
 requires = ["poetry-core"]

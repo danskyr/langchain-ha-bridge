@@ -1,0 +1,15 @@
+homeassistant:
+  name: Integration Test Home
+  unit_system: metric
+  time_zone: Australia/Sydney
+
+demo:
+api:
+conversation:
+intent:
+assist_pipeline:
+
+logger:
+  default: info
+  logs:
+    custom_components.langchain_conversation: debug

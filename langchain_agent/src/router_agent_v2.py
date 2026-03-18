@@ -14,6 +14,7 @@ from langgraph.prebuilt import ToolNode
 from .state import RouterState
 from .utils import create_tavily_tool, preview_text
 from .execution_tracer import ExecutionTracer, ExecutionTrace
+from .langfuse_setup import create_langfuse_handler
 from .nodes import (
     router_node,
     route_to_handlers,
@@ -256,7 +257,18 @@ class LangChainRouterAgentV2:
         - {"role": "tool_result", "tool_call_id": "...", "tool_name": "...", "tool_result": {...}}
         """
         thread_id = conversation_id or str(uuid.uuid4())
-        config = {"configurable": {"thread_id": thread_id}}
+        config: Dict[str, Any] = {
+            "configurable": {"thread_id": thread_id},
+            "run_name": "ha_conversation",
+            "metadata": {
+                "langfuse_session_id": thread_id,
+                "langfuse_user_id": "home_assistant",
+                "langfuse_tags": ["ha_bridge"],
+            },
+        }
+        langfuse_handler = create_langfuse_handler()
+        if langfuse_handler is not None:
+            config["callbacks"] = [langfuse_handler]
 
         self.tracer.start_trace(thread_id)
         self.logger.info(f"[process] Thread: {thread_id[:8]}... | Messages: {len(messages)}")

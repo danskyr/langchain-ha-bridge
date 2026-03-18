@@ -6,7 +6,7 @@ from typing import Any
 from homeassistant.components.system_health import SystemHealthRegistration
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_AGENT_ID
 
 
 @callback
@@ -23,16 +23,9 @@ async def system_health_info(hass: HomeAssistant) -> dict[str, Any]:
         return {"status": "not_configured"}
 
     config_entry = hass.config_entries.async_entries(DOMAIN)[0]
-    url = config_entry.data.get("url", "unknown")
-
-    # Get WebSocket connection status from stored client
-    data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
-    client = data.get("client")
-
-    ws_url = url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+    data = config_entry.data
 
     return {
-        "api_endpoint": url,
-        "websocket_url": ws_url,
-        "websocket_connected": client.is_connected if client else False,
+        "api_endpoint": data.get("url", "unknown"),
+        "agent_id": data.get(CONF_AGENT_ID, "main"),
     }

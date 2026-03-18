@@ -10,3 +10,5 @@ cd ../services
 docker-compose -f home-assistant/docker-compose.yml up -d
 docker-compose -f whisper/docker-compose.yml up -d
 docker-compose -f piper/docker-compose.yml up -d
+docker-compose -f langfuse/docker-compose.yml up -d
+docker-compose -f ha-mcp/docker-compose.yml up -d

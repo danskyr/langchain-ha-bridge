@@ -2,29 +2,31 @@
   "config": {
     "step": {
       "user": {
-        "title": "LangChain Remote Agent Setup",
-        "description": "Configure your LangChain remote service connection.\n\n**URL**: {url_example}\n**Timeout**: {timeout_help}",
+        "title": "OpenClaw Setup",
+        "description": "Connect to your OpenClaw server.",
         "data": {
-          "url": "Service URL",
-          "timeout": "Connection Timeout (seconds)",
+          "url": "OpenClaw Server URL",
+          "api_key": "API Key",
+          "agent_id": "Agent ID (default: main)",
+          "session_key": "Session Key (optional)",
+          "timeout": "Request Timeout (seconds)",
           "verify_ssl": "Verify SSL Certificates"
         }
       },
       "confirm": {
         "title": "Confirm Configuration",
-        "description": "Please confirm your LangChain service configuration:\n\n**URL**: {url}\n**Timeout**: {timeout} seconds\n**SSL Verification**: {verify_ssl}"
+        "description": "**URL**: {url}\n**Agent ID**: {agent_id}"
       }
     },
     "error": {
       "url_required": "URL is required",
       "url_invalid_protocol": "URL must start with http:// or https://",
       "url_invalid_format": "Invalid URL format",
-      "connection_timeout": "Connection timeout - check if service is running",
-      "connection_refused": "Connection refused - check URL and port",
-      "ssl_error": "SSL certificate error - try disabling SSL verification",
-      "connection_error_status_404": "Service not found (404) - check URL path",
-      "connection_error_status_500": "Service error (500) - check service logs",
-      "connection_unknown_error": "Unknown connection error - check service status"
+      "invalid_api_key": "Invalid API key (401 Unauthorized)",
+      "connection_timeout": "Connection timeout — check if OpenClaw is running",
+      "connection_refused": "Connection refused — check URL and port",
+      "ssl_error": "SSL certificate error — try disabling SSL verification",
+      "connection_unknown_error": "Unknown connection error — check server status"
     },
     "abort": {
       "already_configured": "Service is already configured"
@@ -33,10 +35,9 @@
   "options": {
     "step": {
       "init": {
-        "title": "LangChain Remote Options",
-        "description": "Adjust connection settings for your LangChain service.",
+        "title": "OpenClaw Options",
         "data": {
-          "timeout": "Connection Timeout (seconds)",
+          "timeout": "Request Timeout (seconds)",
           "verify_ssl": "Verify SSL Certificates"
         }
       }

@@ -7,41 +7,39 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_API_KEY, CONF_AGENT_ID, CONF_SESSION_KEY
 from .utils import get_host_from_url
 
 _LOGGER = logging.getLogger(__name__)
 
 DATA_SCHEMA = vol.Schema({
-    # vol.Required("url", default="http://127.0.0.1:8000", description="LangChain Service URL"): str,
-    vol.Required("url", default="http://host.docker.internal:8001", description="LangChain Service URL"): str,
-    vol.Optional("timeout", default=90, description="Connection timeout (seconds)"): vol.All(vol.Coerce(int), vol.Range(min=1, max=180)),
-    vol.Optional("verify_ssl", default=False, description="Verify SSL certificates"): bool,
-    vol.Optional("streaming", default=False, description="Enable streaming for preliminary responses"): bool,
+    vol.Required("url", default="http://host.docker.internal:18791"): str,
+    vol.Required(CONF_API_KEY): str,
+    vol.Optional(CONF_AGENT_ID, default="main"): str,
+    vol.Optional(CONF_SESSION_KEY, default=""): str,
+    vol.Optional("timeout", default=90): vol.All(vol.Coerce(int), vol.Range(min=1, max=180)),
+    vol.Optional("verify_ssl", default=True): bool,
 })
+
 
 class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    def __init__(self):
-        """Initialize the config flow."""
-        self.data = {}
-        self.errors = {}
+    def __init__(self) -> None:
+        self.data: dict = {}
+        self.errors: dict = {}
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
-        errors = {}
+        errors: dict = {}
 
         if user_input is not None:
-            # Store the configuration
             self.data = user_input
 
-            # Validate URL format
             url_validation = self._validate_url_format(user_input.get("url"))
             if not url_validation["valid"]:
                 errors["url"] = url_validation["error"]
             else:
-                # Test connection to the URL
                 connection_test = await self._test_connection(user_input)
                 if connection_test["valid"]:
                     return await self.async_step_confirm()
@@ -52,77 +50,62 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=DATA_SCHEMA,
             errors=errors,
-            description_placeholders={
-                "url_example": "Example: http://192.168.1.100:8000",
-                "timeout_help": "How long to wait for responses (1-60 seconds)",
-            },
         )
 
     async def async_step_confirm(self, user_input=None):
         """Confirm the configuration."""
         if user_input is not None or self.data:
-            url = self.data.get('url')
+            url = self.data.get("url", "")
             return self.async_create_entry(
-                # title=f"LangChain Conversation Agent API ({get_host_from_url(self.data['url'])})",
-                title=f"LangChain Conversation Agent API ({get_host_from_url(url) if url else 'unknown'})",
-                description="LangChain Conversation Agent API",
-                data=self.data
+                title=f"OpenClaw ({get_host_from_url(url) if url else 'unknown'})",
+                data=self.data,
             )
 
         return self.async_show_form(
             step_id="confirm",
             description_placeholders={
                 "url": self.data.get("url"),
-                "timeout": self.data.get("timeout", 10),
-                "verify_ssl": "Yes" if self.data.get("verify_ssl", False) else "No",
+                "agent_id": self.data.get(CONF_AGENT_ID, "main"),
             },
         )
 
-    def _validate_url_format(self, url):
-        """Validate URL format."""
+    def _validate_url_format(self, url: str | None) -> dict:
         if not url:
             return {"valid": False, "error": "url_required"}
-
         if not url.startswith(("http://", "https://")):
             return {"valid": False, "error": "url_invalid_protocol"}
-
         try:
             from urllib.parse import urlparse
-            parsed = urlparse(url)
-            if not parsed.netloc:
+            if not urlparse(url).netloc:
                 return {"valid": False, "error": "url_invalid_format"}
         except Exception:
             return {"valid": False, "error": "url_invalid_format"}
-
         return {"valid": True, "error": None}
 
-    async def _test_connection(self, config):
-        """Test WebSocket connection to the LangChain service."""
-        url = config.get("url")
-        timeout = config.get("timeout", 10)
-        verify_ssl = config.get("verify_ssl", False)
-
-        # Convert HTTP URL to WebSocket URL
-        ws_url = url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+    async def _test_connection(self, config: dict) -> dict:
+        """Test connection via GET /v1/models."""
+        url = config.get("url", "").rstrip("/")
+        api_key = config.get(CONF_API_KEY, "")
+        verify_ssl = config.get("verify_ssl", True)
+        timeout_val = config.get("timeout", 10)
 
         try:
             session = async_get_clientsession(self.hass, verify_ssl=verify_ssl)
-
-            async with asyncio.timeout(timeout):
-                async with session.ws_connect(ws_url) as ws:
-                    # Send ping and wait for pong
-                    await ws.send_json({"type": "ping"})
-                    msg = await ws.receive_json()
-                    if msg.get("type") == "pong":
-                        return {"valid": True, "error": None}
-                    return {"valid": False, "error": "unexpected_response"}
+            async with asyncio.timeout(timeout_val):
+                async with session.get(
+                    f"{url}/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                ) as resp:
+                    if resp.status == 401:
+                        return {"valid": False, "error": "invalid_api_key"}
+                    if resp.status >= 500:
+                        return {"valid": False, "error": "connection_unknown_error"}
+                    return {"valid": True, "error": None}
 
         except asyncio.TimeoutError:
             return {"valid": False, "error": "connection_timeout"}
         except aiohttp.ClientConnectorError:
             return {"valid": False, "error": "connection_refused"}
-        except aiohttp.WSServerHandshakeError:
-            return {"valid": False, "error": "websocket_handshake_failed"}
         except aiohttp.ClientSSLError:
             return {"valid": False, "error": "ssl_error"}
         except Exception as err:
@@ -132,19 +115,15 @@ class LangChainRemoteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        """Get the options flow for this handler."""
         return LangChainRemoteOptionsFlowHandler(config_entry)
 
 
 class LangChainRemoteOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for LangChain Remote integration."""
 
-    def __init__(self, config_entry):
-        """Initialize options flow."""
+    def __init__(self, config_entry) -> None:
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
-        """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
@@ -153,15 +132,11 @@ class LangChainRemoteOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema({
                 vol.Optional(
                     "timeout",
-                    default=self.config_entry.options.get("timeout", 10)
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                    default=self.config_entry.options.get("timeout", 90),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=180)),
                 vol.Optional(
                     "verify_ssl",
-                    default=self.config_entry.options.get("verify_ssl", False)
+                    default=self.config_entry.options.get("verify_ssl", True),
                 ): bool,
-                vol.Optional(
-                    "streaming",
-                    default=self.config_entry.options.get("streaming", False)
-                ): bool,
-            })
+            }),
         )
